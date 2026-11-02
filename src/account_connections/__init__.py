@@ -1,4 +1,8 @@
-"""Explicit offers, selections and admission; no identity, persistence or credentials."""
+"""Explicit sharing rules; optional people, controls, admission and web modules.
+
+The original pure-rules imports remain dependency free and portable. Private
+control storage is POSIX; web integrations require the ``web`` extra.
+"""
 
 from .rules import (
     Choice as Choice,
