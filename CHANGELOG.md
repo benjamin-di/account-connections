@@ -3,6 +3,22 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-11-02
+
+### Added
+
+- Add an optional exact-subject HTTPS directory transport with strict issuer and response validation, bounded caller latency and worker capacity, and safe failures without cached admission.
+- Separate private authority storage and process locks behind one qualified platform backend; optional module imports no longer load unsupported POSIX primitives.
+
+### Fixed
+
+- Reject ambiguous HTTP body framing and unsupported transfer encodings before interpreting directory admission responses.
+
+### Upgrade
+
+- Action required: none. Directory integration remains opt-in and requires a restricted client policy and independently scoped key. Canonical authority remains POSIX-only; unsupported platforms refuse before creating state.
+- Rollback: compatible with 1.0.1 when the optional directory transport is unused; remove that integration before reverting. Authority record formats are unchanged.
+
 ## [1.0.1] - 2026-11-02
 
 ### Fixed
@@ -62,3 +78,5 @@ _No changes to the published package._
 [1.0.0]: https://github.com/benjamin-di/account-connections/releases/tag/v1.0.0
 
 [1.0.1]: https://github.com/benjamin-di/account-connections/releases/tag/v1.0.1
+
+[1.1.0]: https://github.com/benjamin-di/account-connections/releases/tag/v1.1.0

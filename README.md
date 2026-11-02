@@ -22,9 +22,14 @@ lock order, migration protocol and executable conformance fixture.
 
 The v1 canonical storage and controls require POSIX. They use process-safe file
 locks, private ownership/mode checks, no-follow opens and durable directory writes.
-Applications supporting Windows must import these modules only inside an explicit
+Applications supporting Windows must construct canonical authority only inside an explicit
 POSIX mode and retain their portable native authority elsewhere. Replacing file
 locks alone does not provide Windows support.
+
+Optional module imports are portable; constructing canonical storage on an
+unqualified platform fails before creating authority state. The internal
+[platform boundary](docs/PLATFORMS.md) includes durable removal as well as storage
+and process locks. A Windows backend remains unregistered pending native qualification.
 
 ## Host contract
 

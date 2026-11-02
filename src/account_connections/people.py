@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
 import time
 import unicodedata
 from collections.abc import Callable, Iterable
@@ -12,7 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from . import rules
-from .storage import StateError, Store, atomic_json, identifier, read_json
+from .storage import StateError, Store, atomic_json, durable_unlink, identifier, read_json
 from .storage import directory as private_directory
 
 MAX_PEOPLE = 100
@@ -425,15 +424,8 @@ class People:
                 data["name"] = clean
             self.store.write(person, data)
             if inactive:
-                (self.store.root / ".inactive" / (person + ".json")).unlink()
                 # Persist the re-admission as carefully as the denied marker.
-                fd = os.open(
-                    self.store.root / ".inactive", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-                )
-                try:
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
+                durable_unlink(self.store.root / ".inactive" / (person + ".json"))
             return data
 
     def roster(self) -> list[Person]:

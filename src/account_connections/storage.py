@@ -1,30 +1,22 @@
-"""Private POSIX control records. Reads never repair retained authority."""
+"""Private control records. Reads never repair retained authority."""
 
 from __future__ import annotations
 
 import contextlib
 import copy
-import fcntl
 import json
 import os
 import re
-import stat
-import tempfile
 import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from ._errors import StateError as StateError
+from ._platform import backend
+
 _KEY = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}\Z")
 MAX_RECORD = 2 * 1024 * 1024
-
-
-class StateError(Exception):
-    """Missing, unreadable or stale authority; hosts map this to a closed error."""
-
-    def __init__(self, code: str = "connection_disconnected"):
-        self.code = code
-        super().__init__(code)
 
 
 def identifier(value: str) -> str:
@@ -34,28 +26,19 @@ def identifier(value: str) -> str:
 
 
 def directory(path: Path) -> None:
-    """Require owned directories without following a symlink at any component."""
-    path = path.absolute()
-    for part in reversed((path, *path.parents)):
-        if part == Path(part.anchor):
-            continue
-        with contextlib.suppress(FileExistsError):
-            part.mkdir(mode=0o700)
-        info = part.lstat()
-        if not stat.S_ISDIR(info.st_mode):
-            raise StateError()
-    info = path.lstat()
-    if info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise StateError()
+    backend().directory(path)
 
 
 def private_open(path: Path, flags: int) -> int:
-    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
-    info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        os.close(fd)
-        raise StateError()
-    return fd
+    return backend().private_open(path, flags)
+
+
+def lock_fd(fd: int, *, exclusive: bool = True, blocking: bool = True) -> None:
+    backend().lock(fd, exclusive=exclusive, blocking=blocking)
+
+
+def durable_unlink(path: Path) -> None:
+    backend().durable_unlink(path)
 
 
 def read_json(path: Path) -> Any:
@@ -83,21 +66,7 @@ def atomic_json(path: Path, value: Any) -> None:
     raw = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     if len(raw) > MAX_RECORD:
         raise StateError()
-    fd, temporary = tempfile.mkstemp(prefix=".record-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temporary)
+    backend().atomic_write(path, raw)
 
 
 class Store:
@@ -122,7 +91,7 @@ class Store:
                 return
             fd = private_open(self.root / ".authority.lock", os.O_CREAT | os.O_RDWR)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX)
+                lock_fd(fd)
                 self._local.locked = True
                 yield
             finally:

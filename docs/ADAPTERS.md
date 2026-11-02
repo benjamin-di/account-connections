@@ -30,7 +30,7 @@ people.contact(
 The root and its control files must be owned and private (0700/0600), and storage
 is POSIX. Each person has a v3 record with an immutable issuer/subject binding,
 display name and namespace rows containing controls, selection and grants.
-Canonical modules require POSIX locks, ownership/mode enforcement, no-follow file
+Canonical authority requires POSIX locks, ownership/mode enforcement, no-follow file
 opens and directory `fsync`; v1 makes no Windows storage/lock compatibility claim.
 Portable applications must keep an explicit platform/mode import boundary and
 retain their native authority for unsupported modes. A native default/custodian

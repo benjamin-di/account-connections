@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import fcntl
 import hashlib
 import os
 import threading
@@ -14,7 +13,7 @@ from typing import Any, cast
 
 from .people import People
 from .rules import revision
-from .storage import StateError, directory, private_open
+from .storage import StateError, directory, lock_fd, private_open
 
 
 class Controls:
@@ -89,7 +88,7 @@ class Controls:
             deadline = time.monotonic() + timeout
             while True:
                 try:
-                    fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+                    lock_fd(fd, exclusive=exclusive, blocking=False)
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
