@@ -24,3 +24,39 @@ owned private ACL policy, handle-based reparse-point refusal, process locks, ato
 durable replacement/removal and restart recovery on a native Windows filesystem.
 Run the application conformance and installed-wheel checks there as well. Simulated
 platform selection and a Linux pass do not establish Windows compatibility.
+
+## Qualifying an unregistered candidate
+
+The native process suite can select a test-only zero-argument factory without
+changing production registration:
+
+```sh
+uv run --locked pytest -q tests/test_platform_storage.py \
+  --authority-test-backend=account_connections._posix:PosixBackend
+```
+
+Replace the factory with the candidate's importable `MODULE:FACTORY` on its native
+platform. Every spawned process constructs that same backend independently; an
+override in the parent alone does not test cross-process behavior. The production
+selector still refuses unsupported platforms. Without an explicit candidate, the
+native tests run on POSIX and skip on unqualified systems. The POSIX directory-flush
+instrumentation is separate and remains POSIX-only. Lock deadlines and crash/drain
+assertions are unchanged.
+
+Identifier vectors require independent records, initialization markers and discovery
+for case variants, reserved Windows device names, trailing dots and maximum-length
+IDs. They are conformance requirements, not a Windows filename implementation.
+The current layout uses exact IDs in physical names and discovery uses filesystem
+paths directly. A Windows candidate must first specify a case-safe physical layout,
+including marker, snapshot and migration names, route existence/discovery through
+that layout, and define explicit adoption of retained state. Do not silently
+normalize exact identity IDs or reinterpret existing authority.
+
+Candidate qualification also needs native security and persistence checks beyond
+this suite: protected owned ACLs on existing and newly created objects; ancestor and
+final reparse-point replacement races checked through handles; safe descriptor
+ownership; and atomic replacement/removal with a documented directory-entry
+durability or recovery contract. File flush plus rename alone is not evidence of
+equivalent directory-entry durability. Process-crash tests do not establish
+power-loss safety. Keep Windows unregistered until those checks, native application
+conformance and a clean installed-wheel run pass on the supported filesystem.

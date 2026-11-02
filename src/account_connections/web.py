@@ -27,7 +27,10 @@ HEADERS = {
         "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
     ),
     "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
+    # no-referrer makes HTML POST use Origin:null in browsers, which our exact
+    # Origin fence correctly refuses. Keep same-origin forms usable while
+    # withholding the page URL from cross-origin destinations.
+    "Referrer-Policy": "same-origin",
 }
 
 

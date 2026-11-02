@@ -18,6 +18,14 @@ jobs:
           version: "0.11.16"
       - run: uv sync --locked
       - run: make check
+      - name: Install the regression browser
+        run: |
+          export PLAYWRIGHT_BROWSERS_PATH="${CI_BROWSER_CACHE:-/tmp/browsers}"
+          uv run --locked --group browser playwright install --with-deps chromium
+      - name: Qualify real browser form origins and referrer isolation
+        run: |
+          export PLAYWRIGHT_BROWSERS_PATH="${CI_BROWSER_CACHE:-/tmp/browsers}"
+          make check-browser
       - name: Match the tagged version
         if: github.ref_type == 'tag'
         run: |

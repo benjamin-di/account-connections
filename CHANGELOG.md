@@ -3,6 +3,17 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-11-02
+
+### Fixed
+
+- Preserve the configured Origin on browser form submissions while withholding page referrers from cross-origin destinations. Exact-Origin and fresh-authentication checks remain enforced.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 1.1.0; authority formats are unchanged, but 1.1.0 retains the browser form-submission defect.
+
 ## [1.1.0] - 2026-11-02
 
 ### Added

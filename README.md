@@ -67,3 +67,7 @@ captured selection and cannot silently acquire another one.
 ## Development
 
 Run `uv sync --locked`, then `make check`. Tests are offline and synthetic.
+For real browser form and referrer checks, install Chromium with
+`uv run --locked --group browser playwright install chromium`, then run
+`make check-browser`. CI runs this gate separately with browser dependencies.
+`CONNECTIONS_TEST_BROWSER` may select an existing Chromium executable for local tests.
