@@ -3,6 +3,20 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] - 2026-11-03
+
+### Fixed
+
+- Render generic `/connections/` pages in the common responsive Connections shell, with labeled status cards, clear empty sharing states and consistent signed-in identity text (#10).
+- Permit the shared stylesheet and exact fixed script under the restrictive page policy while preserving exact-Origin form checks and read-only step-up states (#10).
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 1.1.1; authority records, authentication and account actions are unchanged.
+
+[1.1.2]: https://github.com/benjamin-di/account-connections/releases/tag/v1.1.2
+
 ## [1.1.1] - 2026-11-02
 
 ### Fixed

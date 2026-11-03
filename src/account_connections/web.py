@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
+from signin_window.connections import SCRIPT_SOURCE, page
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
@@ -24,7 +25,8 @@ from .storage import StateError, identifier
 HEADERS = {
     "Cache-Control": "no-store",
     "Content-Security-Policy": (
-        "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+        f"default-src 'none'; style-src 'unsafe-inline'; script-src {SCRIPT_SOURCE}; "
+        "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
     ),
     "X-Content-Type-Options": "nosniff",
     # no-referrer makes HTML POST use Origin:null in browsers, which our exact
@@ -258,10 +260,7 @@ def routes(
             else ""
             for namespace in namespaces
         }
-        parts = [
-            "<!doctype html><html><head><title>My connections</title></head><body>",
-            "<h1>My connections</h1>",
-        ]
+        parts: list[str] = []
         if not fresh:
             parts.append(
                 "<p>Confirm your sign-in to manage connections. "
@@ -275,12 +274,19 @@ def routes(
         try:
             with people.store.lock():
                 people.require_admitted(person)
-                parts.append(f"<p>Signed in as {html.escape(label(person))}</p>")
-                for namespace in namespaces:
+                parts.append(
+                    '<p class="muted">Signed in to Connections as '
+                    + html.escape(label(person))
+                    + "</p>"
+                )
+                for index, namespace in enumerate(namespaces):
                     row = people.namespace(person, namespace)
                     policy = hooks.policy(namespace)
                     control = row["control"]
-                    parts.append(f"<section><h2>{html.escape(namespace)}</h2>")
+                    parts.append(
+                        f'<article aria-labelledby="connection-{index}">'
+                        f'<h2 id="connection-{index}">{html.escape(namespace)}</h2>'
+                    )
                     parts.append(status_fragments[namespace])
                     parts.append(fragments[namespace])
                     choice = row["selection"]["choice"]
@@ -338,6 +344,8 @@ def routes(
                     )
                     parts.append("<h3>Shared accounts available to me</h3>")
                     offers, unavailable = people.offers(person, namespace, policy=policy)
+                    if not offers and not unavailable and not unavailable_people:
+                        parts.append('<p class="muted">No shared accounts are available.</p>')
                     for offer in offers:
                         if offer["owner"] in unavailable_people:
                             continue
@@ -377,6 +385,8 @@ def routes(
                     parts.append("<h3>Shared with</h3>")
                     if not own_active:
                         parts.append("<p>Connect first to share.</p>")
+                    elif not row["shares"]:
+                        parts.append('<p class="muted">You are not sharing this account.</p>')
                     for member, offered in row["shares"].items():
                         parts.append(f"<p>Shared with {html.escape(label(member))}</p>")
                         if (
@@ -444,18 +454,21 @@ def routes(
                                     capability_labels=capability_names[namespace],
                                 )
                             )
-                    parts.append("</section>")
+                    parts.append("</article>")
         except StateError:
             return HTMLResponse(
-                "Connection controls unavailable.", status_code=409, headers=HEADERS
+                page("My connections", '<p role="alert">Connection controls unavailable.</p>'),
+                status_code=409,
+                headers=HEADERS,
             )
         if fresh:
             parts.append(
                 f'<p><a href="{html.escape(auth.step_up_url(prefix + "/"), quote=True)}">'
                 "Confirm your sign-in</a></p>"
             )
-        parts.append("</body></html>")
-        return HTMLResponse("".join(parts), headers=HEADERS)
+        return HTMLResponse(
+            page("My connections", "".join(parts), login_url=prefix + "/login"), headers=HEADERS
+        )
 
     def mutation(action: str) -> Callable[[Request], Awaitable[Response]]:
         async def handle(request: Request) -> Response:

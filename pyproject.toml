@@ -1,6 +1,6 @@
 [project]
 name = "account-connections"
-version = "1.1.1"
+version = "1.1.2"
 description = "Explicit account sharing and selection for authenticated applications"
 readme = "README.md"
 license = "MIT"
@@ -20,7 +20,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.14", "mypy>=1.18", "httpx>=0.28", "starlette>=1.0.1,<2"]
+dev = ["pytest>=8", "ruff>=0.14", "mypy>=1.18", "httpx>=0.28", "starlette>=1.0.1,<2", "signin-window>=0.7,<0.8"]
 browser = ["playwright==1.64.0"]
 
 [tool.ruff]

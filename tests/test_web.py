@@ -96,7 +96,7 @@ def test_home_escapes_display_and_renders_provider_hook(web):
     _, _, client, _ = web
     response = client.get("/connections/")
     assert response.status_code == 200
-    assert "<script>" not in response.text and "&lt;script&gt;" in response.text
+    assert response.text.count("<script>") == 1 and "&lt;script&gt;" in response.text
     assert "Provider connection controls" in response.text
     assert 'value="cart" checked' in response.text
     assert 'value="orders" checked' not in response.text
@@ -286,7 +286,7 @@ def test_share_picker_uses_labels_excludes_self_and_has_no_typed_id(web):
     people, _, client, _ = web
     people.bind("bob", Identity("https://identity.example.com", "bob-sub"), name="Same")
     response = client.get("/connections/", headers={"x-label": "Same"})
-    assert "Signed in as Same (alice)" in response.text
+    assert "Signed in to Connections as Same (alice)" in response.text
     assert "<p>Same (bob)</p>" in response.text
     assert 'name="recipient" value="bob"' in response.text
     assert 'name="recipient" value="alice"' not in response.text
@@ -634,3 +634,25 @@ def test_mount_path_keeps_route_matching_and_external_links_separate(web):
     response = client.get("/example/connections/", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/example/connections/login"
+
+
+@pytest.mark.parametrize("fresh", ["0", "1"])
+def test_home_uses_one_accessible_styled_shell_even_when_step_up_is_needed(web, fresh):
+    from signin_window.connections import SCRIPT_SOURCE
+
+    _, _, client, _ = web
+    response = client.get("/connections/", headers={"x-fresh": fresh})
+    assert response.status_code == 200
+    assert response.text.count("<!doctype html>") == 1
+    assert response.text.count("<main>") == 1
+    assert response.text.count("<h1>") == 1
+    assert '<html lang="en">' in response.text
+    assert '<meta name="viewport"' in response.text
+    assert '<article aria-labelledby="connection-0">' in response.text
+    assert '<h2 id="connection-0">example</h2>' in response.text
+    assert 'data-login-url="/connections/login"' in response.text
+    policy = response.headers["content-security-policy"]
+    assert "style-src 'unsafe-inline'" in policy
+    assert f"script-src {SCRIPT_SOURCE}" in policy
+    assert "default-src 'none'" in policy
+    assert ("<form" in response.text) == (fresh == "1")

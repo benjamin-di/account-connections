@@ -123,6 +123,17 @@ def test_browser_forms_keep_exact_origin_and_cross_origin_navigation_has_no_refe
                 )
                 page = context.new_page()
                 page.goto(origin + "/connections/")
+                assert page.locator("main").count() == 1
+                assert page.locator("article").count() == 1
+                assert "system-ui" in page.locator("body").evaluate(
+                    "el => getComputedStyle(el).fontFamily"
+                )
+                assert (
+                    page.get_by_role("button", name="Connect", exact=True).evaluate(
+                        "el => getComputedStyle(el).minHeight"
+                    )
+                    == "44px"
+                )
                 page.get_by_role("button", name="Connect", exact=True).click()
                 assert submissions == [origin]
                 assert calls == [("alice", "example")]
