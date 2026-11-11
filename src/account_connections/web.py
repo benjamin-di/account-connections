@@ -7,6 +7,7 @@ handlers never accept an actor or credential payload from submitted fields.
 from __future__ import annotations
 
 import html
+import inspect
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -148,13 +149,19 @@ def routes(
     origin: str,
     prefix: str = "/connections",
     mount_path: str = "",
+    identity: object | None = None,
 ) -> list[Route]:
     """Generic home/choose/share/revoke/leave and provider action routes.
 
     Mount alongside signin-window's OIDC routes, not over its login/callback
     paths. Provider actions receive only the authenticated owner. All mutations
     require a fresh session, one exact Origin and a pinned immutable identity.
+    Optional identity is the host's signin-window PageIdentity; the library
+    forwards it unchanged to the shared renderer, never substituting its version.
     """
+    if identity is not None and "identity" not in inspect.signature(page).parameters:
+        raise ValueError("host build identity requires a renderer with identity support")
+    page_options: dict[str, Any] = {"identity": identity} if identity is not None else {}
     parsed = urlsplit(origin)
     if (
         parsed.scheme not in ("https", "http")
@@ -176,6 +183,18 @@ def routes(
     route_prefix = prefix.rstrip("/")
     prefix = mount_path.rstrip("/") + route_prefix
     controls = Controls(people)
+
+    def failure(message: str, status: int) -> HTMLResponse:
+        return HTMLResponse(
+            page(
+                "My connections",
+                f'<p role="alert">{html.escape(message)}</p>',
+                login_url=prefix + "/login",
+                **page_options,
+            ),
+            status_code=status,
+            headers=HEADERS,
+        )
 
     def contact(person: str, identity: dict[str, Any], *, explicit: bool = False) -> None:
         if hooks.enroll is not None:
@@ -456,18 +475,15 @@ def routes(
                             )
                     parts.append("</article>")
         except StateError:
-            return HTMLResponse(
-                page("My connections", '<p role="alert">Connection controls unavailable.</p>'),
-                status_code=409,
-                headers=HEADERS,
-            )
+            return failure("Connection controls unavailable.", 409)
         if fresh:
             parts.append(
                 f'<p><a href="{html.escape(auth.step_up_url(prefix + "/"), quote=True)}">'
                 "Confirm your sign-in</a></p>"
             )
         return HTMLResponse(
-            page("My connections", "".join(parts), login_url=prefix + "/login"), headers=HEADERS
+            page("My connections", "".join(parts), login_url=prefix + "/login", **page_options),
+            headers=HEADERS,
         )
 
     def mutation(action: str) -> Callable[[Request], Awaitable[Response]]:
@@ -483,14 +499,12 @@ def routes(
                 request.headers.get("content-type", "").split(";", 1)[0]
                 != "application/x-www-form-urlencoded"
             ):
-                return HTMLResponse("Invalid connection form.", status_code=400, headers=HEADERS)
+                return failure("Invalid connection form.", 400)
             body = bytearray()
             async for chunk in request.stream():
                 body.extend(chunk)
                 if len(body) > 16384:
-                    return HTMLResponse(
-                        "Connection form too large.", status_code=413, headers=HEADERS
-                    )
+                    return failure("Connection form too large.", 413)
             try:
                 parsed_form = parse_qs(
                     body.decode("utf-8"),
@@ -501,9 +515,7 @@ def routes(
                 if any(
                     len(values) != 1 for key, values in parsed_form.items() if key != "capability"
                 ):
-                    return HTMLResponse(
-                        "Invalid connection form.", status_code=400, headers=HEADERS
-                    )
+                    return failure("Invalid connection form.", 400)
                 form = {key: values[0] for key, values in parsed_form.items()}
                 try:
                     namespace_field = (
@@ -511,13 +523,9 @@ def routes(
                     )
                     namespace = identifier(form[namespace_field])
                 except (KeyError, ValueError):
-                    return HTMLResponse(
-                        "Invalid connection namespace.", status_code=400, headers=HEADERS
-                    )
+                    return failure("Invalid connection namespace.", 400)
                 if namespace not in hooks.namespaces(person):
-                    return HTMLResponse(
-                        "Invalid connection namespace.", status_code=400, headers=HEADERS
-                    )
+                    return failure("Invalid connection namespace.", 400)
                 contact(person, identity, explicit=True)
                 if action in {"choose", "share"}:
                     people.refresh(form["owner"] if action == "choose" else form["recipient"])
@@ -558,13 +566,9 @@ def routes(
                     # Provider/browser I/O runs outside the short authority lock.
                     return await hooks.actions[action](request, person, namespace, form)
             except (KeyError, ValueError, UnicodeError):
-                return HTMLResponse("Invalid connection form.", status_code=400, headers=HEADERS)
+                return failure("Invalid connection form.", 400)
             except (StateError, ConnectionError):
-                return HTMLResponse(
-                    "This connection changed. Reload and try again.",
-                    status_code=409,
-                    headers=HEADERS,
-                )
+                return failure("This connection changed. Reload and try again.", 409)
             return RedirectResponse(prefix + "/", status_code=303, headers=HEADERS)
 
         return handle

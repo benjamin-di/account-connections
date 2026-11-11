@@ -656,3 +656,257 @@ def test_home_uses_one_accessible_styled_shell_even_when_step_up_is_needed(web, 
     assert f"script-src {SCRIPT_SOURCE}" in policy
     assert "default-src 'none'" in policy
     assert ("<form" in response.text) == (fresh == "1")
+
+
+def _identity_client(web, identity):
+    people, _, _, calls = web
+
+    async def connect(request, person, namespace, form):
+        calls.append((person, namespace, dict(form)))
+        return Response("provider action complete", headers={"x-provider": "preserved"})
+
+    hooks = Hooks(
+        actor=lambda identity: "alice",
+        namespaces=lambda person: ["example"],
+        policy=lambda namespace: Policy("1", frozenset({"cart", "orders"})),
+        actions={"connect": connect},
+    )
+    child = Starlette(
+        routes=routes(
+            people,
+            Auth(),
+            hooks,
+            origin=ORIGIN,
+            prefix="/accounts",
+            mount_path="/workspace",
+            identity=identity,
+        )
+    )
+    client = TestClient(Starlette(routes=[Mount("/workspace", app=child)]), base_url=ORIGIN)
+    client.headers.update({"x-session": "present", "x-fresh": "1", "origin": ORIGIN})
+    return client
+
+
+@pytest.fixture
+def identity_web(web, monkeypatch):
+    import account_connections.web as web_module
+
+    original_page = web_module.page
+    supplied = object()
+    rendered = []
+
+    def identity_page(
+        title,
+        body,
+        *,
+        intro="",
+        refresh=False,
+        login_url="/connections/login",
+        identity=None,
+    ):
+        rendered.append((identity, login_url))
+        return original_page(
+            title,
+            body + "<p>Forwarded build identity</p>",
+            intro=intro,
+            refresh=refresh,
+            login_url=login_url,
+        )
+
+    monkeypatch.setattr(web_module, "page", identity_page)
+    return _identity_client(web, supplied), supplied, rendered
+
+
+def _assert_owned_identity_page(response, supplied, rendered, status):
+    from account_connections.web import HEADERS
+
+    assert response.status_code == status
+    assert rendered == [(supplied, "/workspace/accounts/login")]
+    assert rendered[0][0] is supplied
+    assert "Forwarded build identity" in response.text
+    assert 'data-login-url="/workspace/accounts/login"' in response.text
+    assert response.text.count("<!doctype html>") == 1
+    for name, value in HEADERS.items():
+        assert response.headers[name] == value
+
+
+def test_omitted_build_identity_keeps_the_old_renderer_call_contract(web, monkeypatch):
+    import account_connections.web as web_module
+
+    people, _, _, _ = web
+    original_page = web_module.page
+    rendered = []
+
+    def old_page(title, body, *, intro="", refresh=False, login_url="/connections/login"):
+        rendered.append(login_url)
+        return original_page(title, body, intro=intro, refresh=refresh, login_url=login_url)
+
+    monkeypatch.setattr(web_module, "page", old_page)
+    hooks = Hooks(
+        actor=lambda identity: "alice",
+        namespaces=lambda person: ["example"],
+        policy=lambda namespace: Policy("1", frozenset({"cart"})),
+    )
+    client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
+    response = client.get("/connections/", headers={"x-session": "present", "x-fresh": "1"})
+    assert response.status_code == 200
+    assert rendered == ["/connections/login"]
+    assert 'id="connection-identity"' not in response.text
+    with pytest.raises(ValueError, match="identity"):
+        routes(people, Auth(), hooks, origin=ORIGIN, identity=object())
+
+
+@pytest.mark.parametrize("fresh", [None, "0", "1"])
+def test_build_identity_is_forwarded_to_normal_fresh_and_stale_home(web, identity_web, fresh):
+    people, _, _, calls = web
+    client, supplied, rendered = identity_web
+    before = (people.read("alice"), people.read("bob"))
+    response = client.get("/workspace/accounts/", headers={"x-fresh": fresh} if fresh else {})
+    _assert_owned_identity_page(response, supplied, rendered, 200)
+    assert (people.read("alice"), people.read("bob")) == before
+    assert not calls
+    assert ("<form" in response.text) is (fresh != "0")
+
+
+def test_build_identity_is_forwarded_when_home_controls_are_unavailable(
+    web, identity_web, monkeypatch
+):
+    people, _, _, calls = web
+    client, supplied, rendered = identity_web
+    before = (people.read("alice"), people.read("bob"))
+
+    def unavailable(person, namespace):
+        raise StateError("<script>private failure detail</script>")
+
+    monkeypatch.setattr(people, "namespace", unavailable)
+    response = client.get("/workspace/accounts/")
+    _assert_owned_identity_page(response, supplied, rendered, 409)
+    assert "Connection controls unavailable." in response.text
+    assert "private failure detail" not in response.text
+    assert (people.read("alice"), people.read("bob")) == before
+    assert not calls
+
+
+@pytest.mark.parametrize(
+    ("scenario", "status"),
+    [
+        ("mime", 400),
+        ("oversized", 413),
+        ("utf8", 400),
+        ("malformed", 400),
+        ("duplicate", 400),
+        ("unknown", 400),
+        ("invalid_namespace", 400),
+        ("missing_field", 400),
+        ("conflict", 409),
+    ],
+)
+def test_build_identity_is_forwarded_to_owned_mutation_failures(
+    web, identity_web, scenario, status
+):
+    people, controls, _, calls = web
+    client, supplied, rendered = identity_web
+    action = "connect"
+    payload = b"namespace=example"
+    content_type = "application/x-www-form-urlencoded"
+    if scenario == "mime":
+        content_type = "application/json"
+    elif scenario == "oversized":
+        payload += b"&data=" + b"x" * 16384
+    elif scenario == "utf8":
+        payload = b"namespace=\xff"
+    elif scenario == "malformed":
+        payload += b"&malformed"
+    elif scenario == "duplicate":
+        payload += b"&namespace=example"
+    elif scenario == "unknown":
+        payload = b"namespace=unknown"
+    elif scenario == "invalid_namespace":
+        payload = b"namespace=%3Cscript%3E"
+    elif scenario == "missing_field":
+        action = "choose"
+    elif scenario == "conflict":
+        action = "share"
+        payload += b"&recipient=bob&capability=cart&control_revision=stale"
+    before = (people.read("alice"), people.read("bob"))
+    response = client.post(
+        "/workspace/accounts/" + action,
+        content=payload,
+        headers={"content-type": content_type},
+    )
+    _assert_owned_identity_page(response, supplied, rendered, status)
+    assert "<script>private failure detail</script>" not in response.text
+    assert (people.read("alice"), people.read("bob")) == before
+    assert controls.status("alice", "example")["state"] == "active"
+    assert not calls
+
+
+def test_build_identity_does_not_wrap_authentication_or_provider_responses(web, identity_web):
+    people, _, _, calls = web
+    client, _, rendered = identity_web
+    before = (people.read("alice"), people.read("bob"))
+    redirect = client.get(
+        "/workspace/accounts/", headers={"x-session": "expired"}, follow_redirects=False
+    )
+    assert redirect.status_code == 303
+    assert redirect.headers["location"] == "/workspace/accounts/login"
+    refused = client.post("/workspace/accounts/connect", headers={"origin": "null"})
+    assert refused.status_code == 403 and refused.text == "Request refused"
+    stale = client.post("/workspace/accounts/connect", headers={"x-fresh": "0"})
+    assert stale.status_code == 403 and stale.text.endswith('">Confirm</a>')
+    provider = client.post("/workspace/accounts/connect", data={"namespace": "example"})
+    assert provider.status_code == 200 and provider.text == "provider action complete"
+    assert provider.headers["x-provider"] == "preserved"
+    assert calls == [("alice", "example", {"namespace": "example"})]
+    assert rendered == []
+    assert (people.read("alice"), people.read("bob")) == before
+
+
+@pytest.mark.parametrize("scenario", ["home", "unavailable", "error"])
+def test_candidate_renderer_build_footer_on_every_owned_page(web, monkeypatch, scenario):
+    import signin_window.connections as renderer
+
+    identity_type = getattr(renderer, "PageIdentity", None)
+    if identity_type is None:
+        pytest.skip(
+            "Installed signin-window predates PageIdentity; run with the candidate renderer"
+        )
+    supplied = identity_type(
+        service='<img src=x> & "Service"',
+        version='1.2.3<&"',
+        source_revision='0123456789abcdef0123456789abcdef01234567<script>&"',
+    )
+    people, _, _, calls = web
+    client = _identity_client(web, supplied)
+    before = (people.read("alice"), people.read("bob"))
+    if scenario == "unavailable":
+
+        def unavailable(person, namespace):
+            raise StateError("private failure detail")
+
+        monkeypatch.setattr(people, "namespace", unavailable)
+    if scenario == "error":
+        response = client.post("/workspace/accounts/connect", json={"namespace": "example"})
+    else:
+        response = client.get("/workspace/accounts/")
+    assert response.status_code == {"home": 200, "unavailable": 409, "error": 400}[scenario]
+    assert response.text.count('id="connection-identity"') == 1
+    assert f'data-service="{html.escape(supplied.service, quote=True)}"' in response.text
+    assert f'data-version="{html.escape(supplied.version, quote=True)}"' in response.text
+    escaped_revision = html.escape(supplied.source_revision, quote=True)
+    assert f'data-source-revision="{escaped_revision}"' in response.text
+    assert f'title="Source revision: {escaped_revision}"' in response.text
+    footer = response.text.split('<footer id="connection-identity"', 1)[1].split("</footer>", 1)[0]
+    visible = []
+    parser = HTMLParser()
+    parser.handle_data = visible.append
+    parser.feed("<footer" + footer + "</footer>")
+    text = "".join(visible)
+    assert f"{supplied.service} v{supplied.version} · {supplied.source_revision[:12]}" in text
+    assert "Source revision" in text and supplied.source_revision in text
+    assert supplied.service not in response.text
+    assert supplied.version not in response.text
+    assert supplied.source_revision not in response.text
+    assert 'data-login-url="/workspace/accounts/login"' in response.text
+    assert (people.read("alice"), people.read("bob")) == before
+    assert not calls

@@ -201,7 +201,7 @@ No exception text or provider response belongs in tool errors.
 ## Optional web routes
 
 `web.routes(people, auth, hooks, origin="https://app.example.com",
-prefix="/connections", mount_path="")` returns Starlette routes. `auth` is signin-window 0.7
+prefix="/connections", mount_path="", identity=None)` returns Starlette routes. `auth` is signin-window 0.7
 `BrowserAuth` (or a compatible implementation). Keep its OIDC login/callback routes.
 `Hooks` supplies `actor(identity)`, `namespaces(person)`, `policy(namespace)`,
 optional `actions={"connect": async_handler, ...}`, optional
@@ -226,6 +226,17 @@ Both hooks run outside authority transactions, must escape their data and perfor
 no provider/network work. Existing adapters with mixed status/actions can move
 read-only markup to the status hook; do not filter HTML or add host auth wrappers.
 POST freshness validation remains independent and unchanged.
+
+Pass the host application's installed build as a
+`signin_window.connections.PageIdentity` in `identity`. The router forwards this
+object unchanged to the shared renderer on its home, unavailable-controls and
+form-failure pages. The footer identifies the host, never this library. Supply
+the same identity to the host's authentication and provider pages separately.
+This option requires a renderer release exposing `PageIdentity` and the
+`page(..., identity=...)` argument; unsupported renderers refuse route creation
+when identity is supplied. Existing callers can omit identity with their current
+renderer, but that does not establish footer adoption. No Git or environment
+lookup occurs in these routes.
 `Hooks.enroll(person)` lets the provider refuse lost credentials/authority using
 its external initialization watermark before generic first contact. The router
 then calls `People.contact` using only verified browser identity and label.

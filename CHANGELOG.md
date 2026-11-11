@@ -3,6 +3,23 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-11-11
+
+### Added
+
+- Forward an optional host build identity to the shared Connections renderer on home, unavailable-controls and form-failure pages; supplying it requires a renderer with an `identity` argument, and existing callers may omit it (#13)
+
+### Fixed
+
+- Render generic form errors in the same accessible page shell, preserving their HTTP status, response security policy and local login path (#13)
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 1.1.2 for callers that do not pass a build identity; authority records, authentication and account actions are unchanged.
+
+[1.2.0]: https://github.com/benjamin-di/account-connections/releases/tag/v1.2.0
+
 ## [1.1.2] - 2026-11-03
 
 ### Fixed
