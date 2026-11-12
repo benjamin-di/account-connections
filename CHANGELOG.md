@@ -3,6 +3,19 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] - 2026-11-12
+
+### Fixed
+
+- Accept signin-window 0.8 in the `web` extra, so applications can pass a host build identity to the shared Connections renderer (#13)
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 1.2.1.
+
+[1.2.2]: https://github.com/benjamin-di/account-connections/releases/tag/v1.2.2
+
 ## [1.2.1] - 2026-11-12
 
 _Version 1.2.0 was not published to PyPI or as a public release; 1.2.1 is the same package and ships 1.2.0's changes._
