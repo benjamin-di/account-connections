@@ -241,7 +241,7 @@ import sys
 
 class NoPosix(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in ("fcntl", "account_connections._posix"):
+        if fullname == "account_connections._posix":
             raise AssertionError("optional import selected a POSIX backend")
 
 sys.meta_path.insert(0, NoPosix())
@@ -249,7 +249,7 @@ import account_connections
 import account_connections.people
 import account_connections.controls
 import account_connections.migrations
-assert "fcntl" not in sys.modules
+# Python 3.14's own pathlib imports fcntl; the guarantee is about this package's backend.
 assert "account_connections._posix" not in sys.modules
 """
     subprocess.run([sys.executable, "-c", source], check=True, timeout=15)
