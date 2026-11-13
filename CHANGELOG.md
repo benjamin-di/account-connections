@@ -3,6 +3,18 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-11-14
+
+### Added
+
+- Resolve verified immutable issuer/subject identities to retained or newly isolated application people, with explicit complete installed-owner migration and durable interrupted-publication recovery (#14).
+- Look up existing subject bindings without enrolling an unknown or denied identity; preserve namespace controls, selections, sharing and departure barriers (#14).
+
+### Upgrade
+
+- Action required: none for existing callers. To opt in, first quiesce writers, back up complete authority/provider state, and initialize the subject index using independently verified bindings for every retained owner. Hosts still own identity verification, current admission, provider-state census and explicit readmission. See docs/SUBJECTS.md.
+- Rollback: compatible with 1.2.2 for existing callers. Consumers using Subjects must retain 1.3.0 until their subject entrypoints and routing are deliberately reverted; preserve the subject index, initialization markers, canonical controls and provider state together. Never regenerate missing authority from a login or reassign retained credentials.
+
 ## [1.2.2] - 2026-11-12
 
 ### Fixed

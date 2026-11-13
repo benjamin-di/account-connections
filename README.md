@@ -12,7 +12,7 @@ have new revisions; an old selection cannot regain access.
 ## Modules
 
 The original dependency-free `rules` and `ui` interfaces remain available.
-Optional `people`, `controls`, `admission`, `migrations` and `testing` modules add
+Optional `people`, `subjects`, `controls`, `admission`, `migrations` and `testing` modules add
 private POSIX control storage and an application conformance suite. Install
 `account-connections[web]` for Starlette management routes using signin-window
 0.7. The base package does not import web, browser or identity dependencies.
@@ -37,6 +37,14 @@ The host authenticates the actor, checks current application membership and sele
 the provider namespace. The library validates canonical records. The actor and
 owner come from those bindings, never an untrusted tool parameter. Only owners
 may acquire credentials, disconnect or offer access. Recipients cannot reshare.
+
+`Subjects` optionally resolves verified issuer/subject pairs to retained person
+identifiers or isolated empty records, without per-person alias configuration.
+Enable it once using a complete reviewed migration of existing owner bindings;
+new installations require a proven empty local credential/authority census.
+Browser and trusted MCP callers use the same resolver, then `People.contact`
+with their current admission evidence. Resolution does not select an account,
+clear a departure or grant provider access. See [subject resolution](docs/SUBJECTS.md).
 
 `People` serializes grant and selection transitions and persists them before
 success. The pure `rules` functions still require the application's transaction.

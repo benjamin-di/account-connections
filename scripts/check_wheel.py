@@ -25,7 +25,8 @@ with tempfile.TemporaryDirectory() as directory:
             """
 from pathlib import Path
 from account_connections import Choice, Selection, resolve
-from account_connections.people import People, Policy
+from account_connections.people import Identity, People, Policy
+from account_connections.subjects import Subjects
 from account_connections.controls import Controls
 from account_connections.admission import AdmissionService
 assert resolve('actor', Selection(Choice('actor'), 'revision'), None).owner == 'actor'
@@ -40,6 +41,20 @@ people.select('actor', 'default', 'actor', policy=policy,
               expected=people.namespace('actor', 'default')['selection']['revision'])
 admission = AdmissionService(people, controls, b'synthetic-test-key' * 2)
 assert admission.capture('actor', 'default', policy=policy).owner == 'actor'
+subjects = Subjects(people)
+identity = Identity('https://identity.example.com', 'retained-subject')
+subjects.initialize([(identity, 'actor')], retained_credentials=True)
+assert subjects.lookup(identity) == 'actor'
+assert subjects.resolve(
+    identity, namespaces=['default'], retained_credentials=lambda _: True
+) == 'actor'
+fresh = Identity('https://identity.example.com', 'fresh-subject')
+assert subjects.lookup(fresh) is None
+fresh_person = subjects.resolve(fresh, namespaces=['default'], retained_credentials=lambda _: False)
+assert subjects.lookup(fresh) == fresh_person
+assert fresh_person != 'actor'
+assert people.namespace(fresh_person, 'default')['selection']['choice'] is None
+
 """,
         ],
         cwd=directory,
