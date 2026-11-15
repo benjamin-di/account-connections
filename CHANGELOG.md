@@ -3,6 +3,27 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-11-15
+
+### Changed
+
+- Use ordinary valid app sessions for every generic Connections management action, including sharing and provider actions, while retaining real expiry, identity binding, admission, exact Origin and grant/provider fences.
+- Show one account overview and one complete share/edit form with an explicit eligible person, actual permissions and a summary beside submit. Preserve narrower/empty grants, explicit incoming selection, reselection after edits and removal on leave.
+
+- Known limitation: after an overlapping people refresh and recoverable write refusal, Refresh can stay disabled until the page is reloaded; choices remain intact and no grant is created by the refused write.
+
+### Fixed
+
+- Keep provider Connect, Continue sign-in and account-review actions directly visible, with existing provider confirmation contracts and readiness-sensitive disconnect consequences.
+- Preserve sharing choices and revision fences through lookup failures, policy renewal, refresh races and refused writes, including native forms without JavaScript.
+
+### Upgrade
+
+- Action required: none for generic-route callers. Custom management adapters must separately adopt the ordinary-session policy and their own capability labels. No state/configuration migration or session-lifetime change is introduced.
+- Rollback: compatible with 1.3.0; retain authority records, selections, grants and provider journals. Rolling back restores the previous generic UI and five-minute management freshness gate.
+
+[1.4.0]: https://github.com/benjamin-di/account-connections/releases/tag/v1.4.0
+
 ## [1.3.0] - 2026-11-14
 
 ### Added

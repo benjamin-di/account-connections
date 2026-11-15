@@ -9,6 +9,7 @@ from pathlib import Path
 with zipfile.ZipFile(wheel) as archive:
     files = set(archive.namelist())
     assert "account_connections/py.typed" in files
+    assert "account_connections/management.js" in files
     assert not any(name.startswith(("tests/", "publish/", ".github/")) for name in files)
 with tempfile.TemporaryDirectory() as directory:
     env = Path(directory) / "venv"

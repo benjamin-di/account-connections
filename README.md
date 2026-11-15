@@ -65,7 +65,7 @@ cannot prove provider identity or entitlement for you.
 
 `account_connections.ui` renders escaped native forms and selected-connection
 sections. Hosts supply local actions and independently authorize submissions:
-browser identity, Origin, fresh authentication where required, expected revisions.
+valid app-session identity, exact Origin, admission and expected revisions.
 
 Saved content belongs to the recipient. Revocation stops new protected access;
 it does not erase saved content. Work admitted before revoke may finish on its

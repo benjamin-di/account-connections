@@ -4,7 +4,7 @@ from html.parser import HTMLParser
 
 import pytest
 from starlette.applications import Starlette
-from starlette.responses import HTMLResponse, Response
+from starlette.responses import Response
 from starlette.routing import Mount
 from starlette.testclient import TestClient
 
@@ -25,17 +25,6 @@ class Auth:
             "sub": request.headers.get("x-sub", "alice-sub"),
             "label": request.headers.get("x-label", '<script>"&</script>'),
         }
-
-    def require_fresh(self, request, *, next=None, action="continue"):
-        if request.headers.get("x-fresh") == "1":
-            return None
-        return HTMLResponse(
-            '<a href="' + html.escape(self.step_up_url(next), quote=True) + '">Confirm</a>',
-            status_code=403,
-        )
-
-    def step_up_url(self, next=None):
-        return "/connections/login?reauth=1"
 
     def refused(self, request):
         return Response("Request refused", status_code=403 if self.identity(request) else 401)
@@ -79,7 +68,7 @@ def web(tmp_path):
     client = TestClient(
         Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)), base_url=ORIGIN
     )
-    client.headers.update({"x-session": "present", "x-fresh": "1", "origin": ORIGIN})
+    client.headers.update({"x-session": "present", "origin": ORIGIN})
     return people, controls, client, calls
 
 
@@ -92,14 +81,220 @@ def fields(controls):
     }
 
 
+@pytest.fixture
+def ordinary_session(web, tmp_path):
+    from signin_window.oidc import BrowserAuth, OIDCConfig
+
+    people, controls, _, calls = web
+    now = [1000]
+    auth = BrowserAuth(
+        OIDCConfig(
+            issuer="https://identity.example.com",
+            client_id="synthetic-client",
+            public_url=ORIGIN,
+            state_dir=tmp_path / "browser",
+        ),
+        clock=lambda: now[0],
+    )
+    sid = "s" * 43
+    auth.store.save(
+        sid,
+        {
+            "issuer": "https://identity.example.com",
+            "sub": "alice-sub",
+            "groups": [],
+            "claims": {},
+            "label": '<script>"&</script>',
+            "auth_time": 1000,
+            "reauthenticated_at": 1000,
+            "expires": 1900,
+        },
+    )
+
+    async def provider(request, person, namespace, form):
+        calls.append((request.url.path, person, namespace, dict(form)))
+        return Response("provider action complete")
+
+    hooks = Hooks(
+        actor=lambda identity: "alice",
+        namespaces=lambda person: ["example"],
+        policy=lambda namespace: Policy("1", frozenset({"cart", "orders"})),
+        actions=dict.fromkeys(("connect", "reconnect", "cancel", "disconnect"), provider),
+        render_namespace=lambda person, namespace: (
+            '<form method="post" action="/connections/reconnect"><button>Reconnect</button></form>'
+        ),
+    )
+    client = TestClient(
+        auth.middleware(
+            Starlette(routes=auth.routes() + routes(people, auth, hooks, origin=ORIGIN))
+        ),
+        base_url=ORIGIN,
+        follow_redirects=False,
+    )
+    client.cookies.set(auth.cookie, sid)
+    client.headers["origin"] = ORIGIN
+    now[0] = 1301
+    return people, controls, client, calls, auth, now
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["share", "edit", "choose", "revoke", "leave", "connect", "reconnect", "cancel", "disconnect"],
+)
+def test_valid_session_at_301_seconds_can_manage_connections(ordinary_session, action):
+    people, controls, client, calls, _, _ = ordinary_session
+    form = fields(controls)
+    policy = Policy("1", frozenset({"cart", "orders"}))
+    if action in {"edit", "revoke"}:
+        grant = people.offer(
+            "alice",
+            "example",
+            "bob",
+            policy=policy,
+            capabilities=frozenset({"cart"}),
+            expected=None,
+        )
+        form["expected"] = grant.revision
+        form["capability"] = "orders"
+    if action in {"choose", "leave"}:
+        attempt = controls.begin("bob", "example")
+        controls.publish("bob", "example", attempt, lambda: None, require_staged=False)
+        grant = people.offer(
+            "bob",
+            "example",
+            "alice",
+            policy=policy,
+            capabilities=frozenset({"cart"}),
+            expected=None,
+        )
+        form.update(owner="bob", grant=grant.revision, expected=grant.revision)
+        if action == "choose":
+            form["expected"] = people.namespace("alice", "example")["selection"]["revision"]
+    page = client.get("/connections/")
+    assert page.status_code == 200
+    assert 'action="/connections/share"' in page.text
+    assert 'action="/connections/reconnect"' in page.text
+    assert "Confirm your sign-in" not in page.text and "reauth=1" not in page.text
+    endpoint = "share" if action == "edit" else action
+    response = client.post("/connections/" + endpoint, data=form)
+    if action in {"connect", "reconnect", "cancel", "disconnect"}:
+        assert response.status_code == 200
+        assert calls == [("/connections/" + action, "alice", "example", form)]
+    else:
+        assert response.status_code == 303
+        assert response.headers["location"] == "/connections/"
+        if action in {"share", "edit"}:
+            assert people.namespace("alice", "example")["shares"]["bob"]["capabilities"] == [
+                "orders" if action == "edit" else "cart"
+            ]
+        elif action == "choose":
+            assert people.namespace("alice", "example")["selection"]["choice"]["owner"] == "bob"
+        elif action == "revoke":
+            assert people.namespace("alice", "example")["shares"] == {}
+        else:
+            assert people.namespace("bob", "example")["shares"] == {}
+
+
+@pytest.mark.parametrize("action", ["share", "reconnect"])
+def test_real_session_expiry_refuses_post_and_requires_sign_in_then_retry(
+    ordinary_session, monkeypatch, action
+):
+    people, controls, client, calls, auth, now = ordinary_session
+    before = (people.read("alice"), people.read("bob"))
+    now[0] = 1900
+    response = client.post("/connections/" + action, data=fields(controls))
+    assert response.status_code == 401
+    assert "location" not in response.headers
+    assert 'href="/connections/login"' in response.text
+    assert "repeat the action" in response.text
+    assert "form-action 'self'" in response.headers["content-security-policy"]
+    visit = client.get("/connections/")
+    assert visit.status_code == 303
+    assert visit.headers["location"] == "/connections/login"
+
+    async def metadata():
+        return {
+            "issuer": auth.config.issuer,
+            "authorization_endpoint": auth.config.issuer + "/authorize",
+            "token_endpoint": auth.config.issuer + "/token",
+            "jwks_uri": auth.config.issuer + "/keys",
+        }
+
+    async def authorize(request, callback, **kwargs):
+        assert callback == ORIGIN + "/connections/callback"
+        assert kwargs == {}  # Ordinary login allows an existing provider session.
+        return Response(status_code=200)
+
+    async def token(request, **kwargs):
+        return {"userinfo": {"iss": auth.config.issuer, "sub": "alice-sub", "exp": 2800}}
+
+    monkeypatch.setattr(auth.client, "load_server_metadata", metadata)
+    monkeypatch.setattr(auth.client, "authorize_redirect", authorize)
+    monkeypatch.setattr(auth.client, "authorize_access_token", token)
+    assert client.get("/connections/login").status_code == 200
+    callback = client.get("/connections/callback")
+    assert callback.status_code == 303
+    assert callback.headers["location"] == "/connections/"
+    assert (people.read("alice"), people.read("bob")) == before
+    assert not calls
+    # Login and its return never replay the refused write.
+    assert client.post("/connections/" + action, data=fields(controls)).status_code == (
+        303 if action == "share" else 200
+    )
+
+
+@pytest.mark.parametrize(
+    ("protection", "status"),
+    [
+        ("actor", 403),
+        ("admission", 403),
+        ("origin", 403),
+        ("duplicate_origin", 403),
+        ("control_revision", 409),
+        ("grant_revision", 409),
+        ("recipient", 409),
+        ("capability", 400),
+    ],
+)
+def test_ordinary_session_preserves_authorization_fences(ordinary_session, protection, status):
+    people, controls, client, calls, auth, _ = ordinary_session
+    form = fields(controls)
+    headers = {}
+    if protection == "actor":
+        # A valid session for another subject cannot take over a pinned person.
+        sid = client.cookies.get(auth.cookie)
+        session = auth.store.load(sid)
+        session["sub"] = "bob-sub"
+        auth.store.save(sid, session)
+    elif protection == "admission":
+        people.set_inactive("alice", Identity("https://identity.example.com", "alice-sub"))
+    elif protection == "origin":
+        headers = {"origin": "https://other.example.com"}
+    elif protection == "duplicate_origin":
+        headers = [("origin", ORIGIN), ("origin", ORIGIN)]
+    elif protection == "control_revision":
+        form["control_revision"] = "stale"
+    elif protection == "grant_revision":
+        form["expected"] = "stale"
+    elif protection == "recipient":
+        people.set_inactive("bob")
+    else:
+        form["capability"] = "undeclared"
+    before = (people.read("alice"), people.read("bob"))
+    response = client.post("/connections/share", data=form, headers=headers)
+    assert response.status_code == status
+    assert (people.read("alice"), people.read("bob")) == before
+    assert not calls
+
+
 def test_home_escapes_display_and_renders_provider_hook(web):
     _, _, client, _ = web
     response = client.get("/connections/")
     assert response.status_code == 200
-    assert response.text.count("<script>") == 1 and "&lt;script&gt;" in response.text
+    assert response.text.count("<script>") == 2 and "&lt;script&gt;" in response.text
     assert "Provider connection controls" in response.text
-    assert 'value="cart" checked' in response.text
-    assert 'value="orders" checked' not in response.text
+    assert 'value="cart" data-label="cart" checked' in response.text
+    assert 'value="orders" data-label="orders" checked' not in response.text
     assert response.headers["cache-control"] == "no-store"
     assert "form-action 'self'" in response.headers["content-security-policy"]
 
@@ -135,7 +330,7 @@ def test_recipient_sees_actual_offered_and_selected_permissions(web, selected, h
         capability_labels=lambda namespace: {"cart": "Basket", "orders": "Order history"},
     )
     client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
-    client.headers.update({"x-session": "present", "x-fresh": "1", "origin": ORIGIN})
+    client.headers.update({"x-session": "present", "origin": ORIGIN})
     page = client.get("/connections/")
     granted = "Basket, Order history" if history else "Basket"
     assert page.text.count(f"<p>Granted permissions: {granted}.</p>") == (2 if selected else 1)
@@ -156,7 +351,7 @@ def test_permission_labels_are_escaped_with_identifier_fallback_and_empty_grants
         capability_labels=lambda namespace: {"cart": '<img src="x"> & Basket'},
     )
     client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
-    page = client.get("/connections/", headers={"x-session": "present", "x-fresh": "1"})
+    page = client.get("/connections/", headers={"x-session": "present"})
     assert "<p>Granted permissions: none.</p>" in page.text
     assert "<p>Not shared: &lt;img src=&quot;x&quot;&gt; &amp; Basket, orders.</p>" in page.text
     assert '<img src="x">' not in page.text
@@ -195,8 +390,7 @@ def test_changed_grant_displays_current_offer_without_claiming_stale_selection_i
     assert "<p>Granted permissions: cart.</p>" not in page.text
 
 
-@pytest.mark.parametrize("fresh", [False, True])
-def test_home_retains_status_but_hides_every_mutation_form_until_fresh(web, fresh):
+def test_home_renders_status_and_all_management_forms_with_ordinary_auth(web):
     people, controls, _, _ = web
     policy = Policy("1", frozenset({"cart", "orders"}))
     people.offer(
@@ -235,21 +429,19 @@ def test_home_retains_status_but_hides_every_mutation_form_until_fresh(web, fres
         render_namespace_status=status,
     )
     client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
-    client.headers.update({"x-session": "present", "x-fresh": str(int(fresh)), "origin": ORIGIN})
+    client.headers.update({"x-session": "present", "origin": ORIGIN})
     before = (people.read("alice"), people.read("bob"))
     page = client.get("/connections/")
     assert page.status_code == 200
     assert "Saved local session status" in page.text
     assert "Using bob's account" in page.text
     assert "<p>Granted permissions: orders.</p>" in page.text
-    assert ("<form" in page.text) is fresh
-    assert rendered == (["actions", "status"] if fresh else ["status"])
-    if not fresh:
-        assert page.text.index("Confirm your sign-in") < page.text.index(
-            "Saved local session status"
-        )
-        assert 'href="/connections/login?reauth=1"' in page.text
-        assert client.post("/connections/share", data=fields(controls)).status_code == 403
+    for action in ("choose", "share", "revoke", "leave"):
+        assert f'action="/connections/{action}"' in page.text
+    assert 'action="/provider/connect"' in page.text
+    assert rendered == ["actions", "status"]
+    assert "Confirm your sign-in" not in page.text
+    assert "reauth=1" not in page.text
     assert (people.read("alice"), people.read("bob")) == before
 
 
@@ -261,7 +453,7 @@ def test_first_contact_enrolls_without_pinning_until_an_explicit_action(tmp_path
         policy=lambda namespace: Policy("1", frozenset({"cart"})),
     )
     client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
-    headers = {"x-session": "present", "x-fresh": "1", "origin": ORIGIN, "x-label": "Alice"}
+    headers = {"x-session": "present", "origin": ORIGIN, "x-label": "Alice"}
     assert client.get("/connections/", headers=headers).status_code == 200
     assert people.read("alice")["identity"] is None
     assert people.read("alice")["name"] == "Alice"
@@ -287,8 +479,9 @@ def test_share_picker_uses_labels_excludes_self_and_has_no_typed_id(web):
     people.bind("bob", Identity("https://identity.example.com", "bob-sub"), name="Same")
     response = client.get("/connections/", headers={"x-label": "Same"})
     assert "Signed in to Connections as Same (alice)" in response.text
-    assert "<p>Same (bob)</p>" in response.text
-    assert 'name="recipient" value="bob"' in response.text
+    assert 'value="bob">Same (bob)</option>' in response.text
+    assert 'name="recipient" required' in response.text
+    assert '<option value="">Choose a person</option>' in response.text
     assert 'name="recipient" value="alice"' not in response.text
     assert "<label>Person <input" not in response.text
 
@@ -301,7 +494,8 @@ def test_disconnected_owner_explains_sharing_and_keeps_lost_recipient_revocable(
     response = client.get("/connections/")
     assert "Connect first to share" in response.text
     assert "Stop sharing with bob" in response.text
-    assert 'action="/connections/share"' not in response.text
+    assert '<button type="submit" data-save' not in response.text
+    assert 'formaction="/connections/revoke"' in response.text
 
 
 def test_old_browser_cookie_cannot_reactivate_removed_membership(web):
@@ -340,7 +534,7 @@ def test_provider_readiness_hides_share_and_refuses_direct_share_post(web, selec
         connection_ready=ready,
     )
     client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
-    client.headers.update({"x-session": "present", "x-fresh": "1", "origin": ORIGIN})
+    client.headers.update({"x-session": "present", "origin": ORIGIN})
     page = client.get("/connections/")
     assert page.status_code == 200
     assert "Your account is not connected" in page.text
@@ -366,7 +560,7 @@ def test_provider_readiness_exception_isolates_its_owner(web):
         connection_ready=ready,
     )
     client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
-    client.headers.update({"x-session": "present", "x-fresh": "1", "origin": ORIGIN})
+    client.headers.update({"x-session": "present", "origin": ORIGIN})
     page = client.get("/connections/")
     assert page.status_code == 200
     assert 'action="/connections/share"' in page.text
@@ -401,21 +595,6 @@ def test_expired_browser_session_changes_nothing(web):
     assert people.namespace("alice", "example")["shares"] == {}
 
 
-def test_post_step_up_is_page_with_link_and_does_not_replay(web):
-    people, controls, client, _ = web
-    response = client.post(
-        "/connections/share",
-        data=fields(controls),
-        headers={"x-fresh": "0"},
-        follow_redirects=False,
-    )
-    assert response.status_code == 403
-    assert (
-        "location" not in response.headers and 'href="/connections/login?reauth=1"' in response.text
-    )
-    assert people.namespace("alice", "example")["shares"] == {}
-
-
 def test_identity_claim_cannot_transfer_pinned_person(web):
     people, controls, client, _ = web
     headers = {"x-sub": "different-subject"}
@@ -442,7 +621,7 @@ def test_owner_can_update_permission_from_existing_share(web):
     client.post("/connections/share", data=fields(controls))
     offered = people.namespace("alice", "example")["shares"]["bob"]
     response = client.get("/connections/")
-    assert "Update permissions" in response.text
+    assert "Edit access for bob" in response.text
     assert offered["revision"] in response.text
     form = fields(controls)
     form["expected"] = offered["revision"]
@@ -468,12 +647,6 @@ def test_provider_action_uses_authenticated_actor(web):
     form["actor"] = "bob"
     assert client.post("/connections/connect", data=form).status_code == 200
     assert calls[0][:2] == ("alice", "example")
-
-
-def test_provider_action_needs_fresh_auth(web):
-    _, controls, client, calls = web
-    response = client.post("/connections/connect", data=fields(controls), headers={"x-fresh": "0"})
-    assert response.status_code == 403 and not calls
 
 
 @pytest.mark.parametrize(
@@ -537,7 +710,7 @@ def test_provider_namespace_field_preserves_application_form_contract(web):
     client = TestClient(
         Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)), base_url=ORIGIN
     )
-    client.headers.update({"x-session": "present", "x-fresh": "1", "origin": ORIGIN})
+    client.headers.update({"x-session": "present", "origin": ORIGIN})
     form = {"site": "example", "revision": "native-revision"}
     assert client.post("/connections/start", data=form).status_code == 200
     assert calls == [("alice", "example", form)]
@@ -607,9 +780,7 @@ def test_leave_and_decline_use_the_current_offer_after_permission_changes(web, s
     parsed = Forms()
     parsed.feed(page.text)
     assert parsed.leaves == [{"namespace": "example", "owner": "bob", "expected": offered.revision}]
-    assert (
-        "Decline shared account" if scenario == "unselected" else "Leave shared account"
-    ) in page.text
+    assert ("Decline access" if scenario == "unselected" else "Leave account") in page.text
     assert (
         client.post("/connections/leave", data=parsed.leaves[0], follow_redirects=False).status_code
         == 303
@@ -628,7 +799,7 @@ def test_mount_path_keeps_route_matching_and_external_links_separate(web):
     )
     child = Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN, mount_path="/example"))
     client = TestClient(Starlette(routes=[Mount("/example", app=child)]), base_url=ORIGIN)
-    response = client.get("/example/connections/", headers={"x-session": "present", "x-fresh": "1"})
+    response = client.get("/example/connections/", headers={"x-session": "present"})
     assert response.status_code == 200
     assert 'action="/example/connections/choose"' in response.text
     response = client.get("/example/connections/", follow_redirects=False)
@@ -636,26 +807,25 @@ def test_mount_path_keeps_route_matching_and_external_links_separate(web):
     assert response.headers["location"] == "/example/connections/login"
 
 
-@pytest.mark.parametrize("fresh", ["0", "1"])
-def test_home_uses_one_accessible_styled_shell_even_when_step_up_is_needed(web, fresh):
+def test_home_uses_one_accessible_styled_shell(web):
     from signin_window.connections import SCRIPT_SOURCE
 
     _, _, client, _ = web
-    response = client.get("/connections/", headers={"x-fresh": fresh})
+    response = client.get("/connections/")
     assert response.status_code == 200
     assert response.text.count("<!doctype html>") == 1
     assert response.text.count("<main>") == 1
     assert response.text.count("<h1>") == 1
     assert '<html lang="en">' in response.text
     assert '<meta name="viewport"' in response.text
-    assert '<article aria-labelledby="connection-0">' in response.text
+    assert '<article aria-labelledby="connection-0"' in response.text
     assert '<h2 id="connection-0">example</h2>' in response.text
     assert 'data-login-url="/connections/login"' in response.text
     policy = response.headers["content-security-policy"]
     assert "style-src 'unsafe-inline'" in policy
     assert f"script-src {SCRIPT_SOURCE}" in policy
     assert "default-src 'none'" in policy
-    assert ("<form" in response.text) == (fresh == "1")
+    assert "<form" in response.text
 
 
 def _identity_client(web, identity):
@@ -683,7 +853,7 @@ def _identity_client(web, identity):
         )
     )
     client = TestClient(Starlette(routes=[Mount("/workspace", app=child)]), base_url=ORIGIN)
-    client.headers.update({"x-session": "present", "x-fresh": "1", "origin": ORIGIN})
+    client.headers.update({"x-session": "present", "origin": ORIGIN})
     return client
 
 
@@ -748,7 +918,7 @@ def test_omitted_build_identity_keeps_the_old_renderer_call_contract(web, monkey
         policy=lambda namespace: Policy("1", frozenset({"cart"})),
     )
     client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
-    response = client.get("/connections/", headers={"x-session": "present", "x-fresh": "1"})
+    response = client.get("/connections/", headers={"x-session": "present"})
     assert response.status_code == 200
     assert rendered == ["/connections/login"]
     assert 'id="connection-identity"' not in response.text
@@ -756,16 +926,15 @@ def test_omitted_build_identity_keeps_the_old_renderer_call_contract(web, monkey
         routes(people, Auth(), hooks, origin=ORIGIN, identity=object())
 
 
-@pytest.mark.parametrize("fresh", [None, "0", "1"])
-def test_build_identity_is_forwarded_to_normal_fresh_and_stale_home(web, identity_web, fresh):
+def test_build_identity_is_forwarded_to_home(web, identity_web):
     people, _, _, calls = web
     client, supplied, rendered = identity_web
     before = (people.read("alice"), people.read("bob"))
-    response = client.get("/workspace/accounts/", headers={"x-fresh": fresh} if fresh else {})
+    response = client.get("/workspace/accounts/")
     _assert_owned_identity_page(response, supplied, rendered, 200)
     assert (people.read("alice"), people.read("bob")) == before
     assert not calls
-    assert ("<form" in response.text) is (fresh != "0")
+    assert "<form" in response.text
 
 
 def test_build_identity_is_forwarded_when_home_controls_are_unavailable(
@@ -852,8 +1021,6 @@ def test_build_identity_does_not_wrap_authentication_or_provider_responses(web, 
     assert redirect.headers["location"] == "/workspace/accounts/login"
     refused = client.post("/workspace/accounts/connect", headers={"origin": "null"})
     assert refused.status_code == 403 and refused.text == "Request refused"
-    stale = client.post("/workspace/accounts/connect", headers={"x-fresh": "0"})
-    assert stale.status_code == 403 and stale.text.endswith('">Confirm</a>')
     provider = client.post("/workspace/accounts/connect", data={"namespace": "example"})
     assert provider.status_code == 200 and provider.text == "provider action complete"
     assert provider.headers["x-provider"] == "preserved"
@@ -910,3 +1077,117 @@ def test_candidate_renderer_build_footer_on_every_owned_page(web, monkeypatch, s
     assert 'data-login-url="/workspace/accounts/login"' in response.text
     assert (people.read("alice"), people.read("bob")) == before
     assert not calls
+
+
+@pytest.mark.parametrize("capabilities", [frozenset(), frozenset({"orders"})])
+def test_edit_form_keeps_actual_empty_or_narrow_grant(web, capabilities):
+    people, controls, client, _ = web
+    policy = Policy("1", frozenset({"cart", "orders"}))
+    offered = people.offer(
+        "alice", "example", "bob", policy=policy, capabilities=capabilities, expected=None
+    )
+    response = client.get("/connections/")
+    edit = response.text.split('id="share-0-bob"', 1)[1].split("</details>", 1)[0]
+    assert "<select" not in edit
+    assert ('value="cart" data-label="cart" checked' in edit) is ("cart" in capabilities)
+    assert ('value="orders" data-label="orders" checked' in edit) is ("orders" in capabilities)
+    form = fields(controls)
+    form["expected"] = offered.revision
+    form["capability"] = list(capabilities)
+    assert client.post("/connections/share", data=form).status_code == 400
+    assert people.namespace("alice", "example")["shares"]["bob"]["revision"] == offered.revision
+
+
+@pytest.mark.parametrize("state", ["empty", "unavailable", "failed"])
+def test_people_picker_distinguishes_empty_unavailable_and_lookup_failure(web, monkeypatch, state):
+    people, _, client, _ = web
+    if state == "empty":
+        roster = people.roster
+        monkeypatch.setattr(
+            people, "roster", lambda: [row for row in roster() if row.id == "alice"]
+        )
+    elif state == "unavailable":
+        people.set_inactive("bob")
+    else:
+
+        def failed():
+            raise StateError("private lookup detail")
+
+        monkeypatch.setattr(people, "roster", failed)
+    response = client.get("/connections/")
+    assert response.status_code == 200
+    assert ("People couldn’t load. Try again." in response.text.split("<script>")[0]) is (
+        state == "failed"
+    )
+    assert ("Some people are unavailable." in response.text) is (state == "unavailable")
+    assert "private lookup detail" not in response.text
+    assert 'data-setup-link href="/connections/"' in response.text
+    assert "They do not need their own provider account" in response.text
+
+
+def test_fixed_single_permission_is_explained_without_a_redundant_picker(web):
+    people, _, _, _ = web
+    hooks = Hooks(
+        actor=lambda identity: "alice",
+        namespaces=lambda person: ["example"],
+        policy=lambda namespace: Policy("1", frozenset({"read"})),
+        default_capabilities=lambda namespace: frozenset({"read"}),
+        capability_labels=lambda namespace: {"read": "Read subscription articles"},
+    )
+    client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
+    response = client.get("/connections/", headers={"x-session": "present"})
+    assert "Read subscription articles: included." in response.text
+    assert '<input type="checkbox"' not in response.text
+    assert '<input type="hidden" name="capability" value="read"' in response.text
+
+
+def test_failed_no_script_share_keeps_choices_and_submitted_revision(web):
+    people, controls, client, _ = web
+    form = fields(controls)
+    form["control_revision"] = "stale"
+    form["capability"] = "orders"
+    response = client.post("/connections/share", data=form)
+    assert response.status_code == 409
+    assert 'id="share-0-new" open' in response.text
+    assert '<option value="bob" selected>' in response.text
+    assert 'name="control_revision" value="stale"' in response.text
+    assert 'value="orders" data-label="orders" checked' in response.text
+    assert "data-save disabled" in response.text
+    assert "Refresh details before retrying" in response.text
+    assert people.namespace("alice", "example")["shares"] == {}
+
+
+def test_removed_grant_keeps_failed_no_script_edit_without_recreating_access(web):
+    people, controls, client, _ = web
+    policy = Policy("1", frozenset({"cart", "orders"}))
+    offered = people.offer(
+        "alice", "example", "bob", policy=policy, capabilities=frozenset({"cart"}), expected=None
+    )
+    people.revoke("alice", "example", "bob", expected=offered.revision)
+    form = fields(controls)
+    form.update(expected=offered.revision, capability="orders")
+    response = client.post("/connections/share", data=form)
+    assert response.status_code == 409
+    assert 'id="share-0-changed" open' in response.text
+    assert 'name="expected" value="' + offered.revision + '"' in response.text
+    assert 'value="orders" data-label="orders" checked' in response.text
+    assert people.namespace("alice", "example")["shares"] == {}
+
+
+def test_directory_callback_failure_is_not_reported_as_an_empty_people_list(web):
+    from account_connections.people import DirectoryPerson
+
+    people, _, client, _ = web
+    people.bind("bob", Identity("https://identity.example.com", "bob-sub"))
+
+    def directory(identity):
+        if identity.subject == "bob-sub":
+            raise RuntimeError("synthetic outage")
+        return DirectoryPerson(True)
+
+    people.directory = directory
+    response = client.get("/connections/")
+    markup = response.text.split("<script>")[0]
+    assert "People couldn’t load. Try again." in markup
+    assert "No eligible people are available" not in markup
+    assert 'value="bob"' not in markup

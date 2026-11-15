@@ -209,6 +209,25 @@ optional `actions={"connect": async_handler, ...}`, optional
 `capability_labels(namespace)` and `default_capabilities(namespace)`.
 
 The generic page provides own/shared account selection, offers, revoke and leave.
+Owned ready accounts expose Share directly. One complete form picks an eligible
+person explicitly and displays the actual permissions and a summary beside submit.
+The same form edits a fixed recipient, preserving narrower and empty grants;
+Stop sharing remains available when the person or provider becomes unavailable.
+Incoming account selection is explicit. Leaving removes the grant, requiring the
+owner to share again; changing grant permissions requires recipient reselection.
+Provider action markup stays directly visible, including Connect, Continue sign-in
+and account review. The library does not parse or regroup it; providers may retain
+their own maintenance menus, disconnect confirmation and account review flows.
+Connected accounts also show disconnect consequences for affected recipients.
+
+The small hash-authorized script enhances native expandable forms into one dialog,
+keeps errors and choices in place, refreshes people on explicit request, and updates
+the account page after a successful write. It never retries unknown outcomes.
+The CSP permits only same-origin fetches, with exact Origin checks on every write.
+Without JavaScript, forms submit normally and people refresh uses a GET retaining
+the explicit recipient and permission choices; no draft or authentication state is stored.
+The people helper links to the current app's Connections page, not a global directory.
+Lookup failures, unavailable people and an empty eligible list have distinct messages.
 Default share capabilities are empty unless the application declares defaults.
 Offered and valid selected grants show granted permissions and declared permissions
 not shared. Empty grants explicitly show none. `capability_labels(namespace)`
@@ -216,16 +235,23 @@ optionally maps canonical capability IDs to display labels, with ID fallback;
 labels are escaped in summaries and owner checkboxes. Labels never change grants,
 submitted capability IDs or admission policy.
 
-Home checks freshness through `auth.require_fresh` outside authority transactions.
-A stale GET keeps safe connection/permission status and puts an escaped
-`auth.step_up_url` confirmation link before it, without any generic mutation forms.
-`render_namespace` supplies trusted provider action markup and is invoked only
-with fresh authentication. `render_namespace_status` optionally supplies read-only
-provider status for both fresh and stale GETs; it must not emit mutation forms.
-Both hooks run outside authority transactions, must escape their data and perform
-no provider/network work. Existing adapters with mixed status/actions can move
-read-only markup to the status hook; do not filter HTML or add host auth wrappers.
-POST freshness validation remains independent and unchanged.
+Home and every management POST use an ordinary valid app session, including
+selection, sharing and permission edits, revoke/leave and provider actions.
+Authentication age alone neither hides controls nor refuses writes. The local
+`Authentication` protocol requires only `identity(request)` and `refused(request)`;
+`identity` must return verified identity only while the app session is valid.
+`render_namespace` supplies trusted provider action markup for authenticated users.
+`render_namespace_status` optionally supplies read-only provider status; it must not
+emit mutation forms. Both hooks run outside authority transactions, must escape
+their data and perform no provider/network work. Provider actions retain their
+own attempt ownership, account review and credential publication/deletion fences.
+
+Signed-out GETs redirect to the existing ordinary login route. An expired POST
+returns `auth.refused` unchanged (signin-window supplies 401 and a sign-in link),
+without redirecting the POST through OIDC or replaying it. Ordinary login returns
+to Connections, where the person retries the action. Keep the existing app-session
+expiry, safe return destinations and CSP. Do not add adapter freshness checks for
+these management actions or globally bypass signin-window's shared freshness helper.
 
 Pass the host application's installed build as a
 `signin_window.connections.PageIdentity` in `identity`. The router forwards this
@@ -263,17 +289,15 @@ pure verified mapping/configuration, not provider I/O. Provider forms submit
 Handlers receive `(request, authenticated_person, namespace, form)` and must
 recheck their supplied revision at the actual credential publication or deletion.
 
-Every POST checks a verified browser identity, its pinned binding, exactly one
-matching Origin and `auth.require_fresh`; stale authentication returns its
-confirmation page unchanged. It never redirects a submitted form into OIDC.
-`auth.step_up_url` supplies navigation links; `auth.refused` explains admission
-failures. GETs may enroll first contact and update display labels, but never
-choose accounts, change grants or publish credentials. The library escapes generic display data,
-bounds form parsing and sets restrictive CSP/no-store headers. Applications can
+Every POST checks a valid browser session, its pinned identity binding, current
+admission and exactly one matching Origin. `auth.refused` explains session,
+admission and Origin failures. GETs may enroll first contact and update display
+labels, but never choose accounts, change grants or publish credentials. The library
+escapes generic display data, bounds form parsing and sets restrictive CSP/no-store headers. Applications can
 choose compatible route prefixes and provider actions while retaining tool names.
 For an app mounted under `/example`, pass `mount_path="/example"` (normally
 `auth.prefix`): route matching remains `/connections/`, while forms, navigation
-and step-up destinations use `/example/connections/`.
+and login destinations use `/example/connections/`.
 
 ## One-way migration
 
