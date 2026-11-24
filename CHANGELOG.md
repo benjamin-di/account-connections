@@ -3,6 +3,45 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.3] - 2026-11-24
+
+### Changed
+
+- Also exclude `tests/test_ci_reporting.py` (which imports `scripts/ci-check.py`) from the public mirror export via `.gitattributes`.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 1.4.2; no runtime, state, API, or configuration changes.
+
+[1.4.3]: https://github.com/benjamin-di/account-connections/releases/tag/v1.4.3
+
+## [1.4.2] - 2026-11-24
+
+### Changed
+
+- Exclude the private Jenkins check runner (`scripts/ci-check.py`) from the public mirror export via `.gitattributes`.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 1.4.1; no runtime, state, API, or configuration formats changed.
+
+[1.4.2]: https://github.com/benjamin-di/account-connections/releases/tag/v1.4.2
+
+## [1.4.1] - 2026-11-24
+
+### Changed
+
+- Allow `signin-window[oidc]` up to `<0.11` in the `[web]` extra so applications using `account-connections` can upgrade to `signin-window` 0.10.0.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 1.4.0; no state, API, or configuration formats changed.
+
+[1.4.1]: https://github.com/benjamin-di/account-connections/releases/tag/v1.4.1
+
 ## [1.4.0] - 2026-11-15
 
 ### Changed

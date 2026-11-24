@@ -226,7 +226,10 @@ def test_real_session_expiry_refuses_post_and_requires_sign_in_then_retry(
         return Response(status_code=200)
 
     async def token(request, **kwargs):
-        return {"userinfo": {"iss": auth.config.issuer, "sub": "alice-sub", "exp": 2800}}
+        return {
+            "id_token": "verified-id-token",
+            "userinfo": {"iss": auth.config.issuer, "sub": "alice-sub", "exp": 2800},
+        }
 
     monkeypatch.setattr(auth.client, "load_server_metadata", metadata)
     monkeypatch.setattr(auth.client, "authorize_redirect", authorize)
