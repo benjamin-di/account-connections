@@ -1274,3 +1274,53 @@ def test_suite_requires_renderer_support_and_omitted_suite_has_no_switcher(web, 
     monkeypatch.setattr(web_module, "page", old_page)
     with pytest.raises(ValueError, match="suite"):
         routes(people, Auth(), hooks, origin=ORIGIN, suite=lambda _req: None)
+
+
+def test_sign_out_form_renders_only_when_auth_exposes_logout(ordinary_session, web):
+    _, _, bare_client, _ = web
+    bare = bare_client.get("/connections/")
+    assert bare.status_code == 200
+    assert "/connections/logout" not in bare.text
+    assert ">Sign out<" not in bare.text
+
+    _, _, client, _, _, _ = ordinary_session
+    home = client.get("/connections/")
+    assert home.status_code == 200
+    assert '<form method="post" action="/connections/logout">' in home.text
+    assert '<button type="submit" class="quiet">Sign out</button>' in home.text
+    assert "Signing out keeps your saved connection." in home.text
+
+    signed_out = client.post("/connections/logout")
+    assert signed_out.status_code == 200
+    assert "signed out" in signed_out.text.lower()
+    after = client.get("/connections/")
+    assert after.status_code == 303
+    assert after.headers["location"] == "/connections/login"
+
+
+def test_sign_out_form_uses_mount_path_and_plural_copy(tmp_path):
+    people = People(tmp_path / "authority")
+
+    class LogoutAuth(Auth):
+        async def logout(self, request):
+            return Response("signed out")
+
+    hooks = Hooks(
+        actor=lambda identity: "alice",
+        namespaces=lambda person: ["first", "second"],
+        policy=lambda namespace: Policy("1", frozenset({"cart"})),
+    )
+    people.enroll(
+        "alice",
+        namespaces=["first", "second"],
+        identity=Identity("https://identity.example.com", "alice-sub"),
+    )
+    child = Starlette(
+        routes=routes(people, LogoutAuth(), hooks, origin=ORIGIN, mount_path="/example")
+    )
+    client = TestClient(Starlette(routes=[Mount("/example", app=child)]), base_url=ORIGIN)
+    response = client.get("/example/connections/", headers={"x-session": "present"})
+    assert response.status_code == 200
+    assert '<form method="post" action="/example/connections/logout">' in response.text
+    assert '<button type="submit" class="quiet">Sign out</button>' in response.text
+    assert "Signing out keeps your saved connections." in response.text

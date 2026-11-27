@@ -3,6 +3,17 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-11-27
+
+### Added
+
+- The signed-in management home page ends with a "Sign out" form (`POST <prefix>/logout`) and a note that signing out keeps saved connections, whenever the configured `auth` object exposes a callable `logout` handler such as `signin_window.oidc.BrowserAuth`. Nothing is rendered when it does not.
+
+### Upgrade
+
+- Action required: none. Callers with tests asserting the exact home-page markup may see one additional panel.
+- Rollback: compatible with 1.5.0; no storage, route, or wire-format changes.
+
 ## [1.5.0] - 2026-11-27
 
 ### Changed

@@ -235,6 +235,7 @@ def routes(
         raise ValueError("local mount path required")
     route_prefix = prefix.rstrip("/")
     prefix = mount_path.rstrip("/") + route_prefix
+    has_logout = callable(getattr(auth, "logout", None))
     controls = Controls(people)
 
     def resolve_suite(request: Request | None) -> Suite | None:
@@ -766,6 +767,19 @@ def routes(
         if failed:
             parts.insert(
                 0, f'<div class="callout bad" role="alert"><p>{html.escape(failed[2])}</p></div>'
+            )
+        if has_logout:
+            saved_note = (
+                "Signing out keeps your saved connection."
+                if len(namespaces) == 1
+                else "Signing out keeps your saved connections."
+            )
+            parts.append(
+                '<section class="panel"><div class="card-head">'
+                f'<p class="muted">{saved_note}</p>'
+                f'<form method="post" action="{html.escape(prefix + "/logout", quote=True)}">'
+                '<button type="submit" class="quiet">Sign out</button></form>'
+                "</div></section>"
             )
         parts.append(f"<style>{management.STYLE}</style><script>{management.SCRIPT}</script>")
         page_intro = intro or f"Signed in as {label(person)}."
