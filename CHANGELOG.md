@@ -3,6 +3,17 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.7.1] - 2026-11-27
+
+### Changed
+
+- Widen the optional `web` extra dependency on `signin-window[oidc]` to `>=0.13.0,<0.16` so applications can install `account-connections[web]` alongside `signin-window` 0.14.x and 0.15.x.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with `1.7.0`.
+
 ## [1.7.0] - 2026-11-27
 
 ### Added
