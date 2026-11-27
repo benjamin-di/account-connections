@@ -1324,3 +1324,101 @@ def test_sign_out_form_uses_mount_path_and_plural_copy(tmp_path):
     assert '<form method="post" action="/example/connections/logout">' in response.text
     assert '<button type="submit" class="quiet">Sign out</button>' in response.text
     assert "Signing out keeps your saved connections." in response.text
+
+
+def test_root_home_path_serves_root_redirects_legacy_and_keeps_action_prefix(tmp_path):
+    people = People(tmp_path / "authority")
+    people.enroll(
+        "alice",
+        namespaces=["example"],
+        identity=Identity("https://identity.example.com", "alice-sub"),
+    )
+    people.enroll("bob", namespaces=["example"])
+    controls = Controls(people)
+    attempt = controls.begin("alice", "example")
+    controls.stage("alice", "example", attempt, lambda: None)
+    controls.publish("alice", "example", attempt, lambda: None)
+
+    class LogoutAuth(Auth):
+        async def logout(self, request):
+            return Response("signed out")
+
+    hooks = Hooks(
+        actor=lambda identity: "alice",
+        namespaces=lambda person: ["example"],
+        policy=lambda namespace: Policy("1", frozenset({"cart"})),
+    )
+    client = TestClient(
+        Starlette(routes=routes(people, LogoutAuth(), hooks, origin=ORIGIN, home_path="/")),
+        base_url=ORIGIN,
+        follow_redirects=False,
+    )
+    headers = {"x-session": "present", "origin": ORIGIN}
+
+    root = client.get("/", headers=headers)
+    assert root.status_code == 200
+    assert 'action="/connections/share"' in root.text
+    assert 'action="/connections/logout"' in root.text
+    assert 'data-setup-link href="/"' in root.text
+    assert 'formaction="/"' in root.text
+
+    bad_post = client.post(
+        "/connections/share",
+        headers=headers,
+        data={"namespace": "unknown"},
+    )
+    assert bad_post.status_code == 400
+    assert '<a class="button" href="/">Back to connections</a>' in bad_post.text
+
+    for legacy in ("/connections", "/connections/"):
+        redir = client.get(legacy, headers=headers)
+        assert redir.status_code == 308
+        assert redir.headers["location"] == "/"
+
+    shared = client.post(
+        "/connections/share",
+        headers=headers,
+        data={
+            "namespace": "example",
+            "recipient": "bob",
+            "capability": "cart",
+            "control_revision": controls.status("alice", "example")["revision"],
+        },
+    )
+    assert shared.status_code == 303
+    assert shared.headers["location"] == "/"
+
+    no_dup = routes(people, LogoutAuth(), hooks, origin=ORIGIN, home_path="/connections")
+    assert [r.path for r in no_dup if "GET" in (r.methods or set())] == [
+        "/connections",
+        "/connections/",
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad_home",
+    [
+        "",
+        "relative",
+        "//evil",
+        "/\\evil",
+        "/a\x00b",
+        "/{id}",
+        "/../x",
+        "/a?b=1",
+        "/a#b",
+        "/a b",
+        "/connections/share",
+        "/connections/login",
+        "/connections/login/",
+    ],
+)
+def test_invalid_or_colliding_home_path_is_refused(web, bad_home):
+    people, _, _, _ = web
+    hooks = Hooks(
+        actor=lambda identity: "alice",
+        namespaces=lambda person: ["example"],
+        policy=lambda namespace: Policy("1", frozenset({"cart"})),
+    )
+    with pytest.raises(ValueError, match="home path"):
+        routes(people, Auth(), hooks, origin=ORIGIN, home_path=bad_home)

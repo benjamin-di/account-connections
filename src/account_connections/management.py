@@ -60,7 +60,9 @@ def share_form(
     error: str = "",
     opened: bool = False,
     renewing: bool = False,
+    home_url: str | None = None,
 ) -> str:
+    resolved_home = home_url if home_url is not None else f"{prefix}/"
     editing = bool(expected)
     title = f"Edit access for {recipient_label}" if editing else "Share access"
     fields = {
@@ -122,10 +124,10 @@ def share_form(
             "They do not need their own provider account. This list shows eligible people who "
             "have set up this app; it cannot explain why someone is missing.</p>"
             f'<div class="actions"><a class="button secondary" data-setup-link '
-            f'href="{escape(prefix, quote=True)}/">Open setup link</a>'
+            f'href="{escape(resolved_home, quote=True)}">Open setup link</a>'
             '<button type="button" class="secondary" data-copy-link>Copy setup link</button>'
             f'<button type="submit" class="secondary" data-refresh-people formmethod="get" '
-            f'formaction="{escape(prefix, quote=True)}/" formnovalidate '
+            f'formaction="{escape(resolved_home, quote=True)}" formnovalidate '
             f'name="refresh_people" value="{escape(namespace, quote=True)}">'
             "Refresh list</button></div>"
             "<details><summary>Still missing after signing in?</summary>"
@@ -203,7 +205,8 @@ def share_form(
     parts.append(f'<p role="alert" data-form-error>{escape(error)}</p>')
     if error:
         parts.append(
-            f'<p><a href="{escape(prefix, quote=True)}/">Refresh details before retrying</a></p>'
+            f'<p><a href="{escape(resolved_home, quote=True)}">'
+            "Refresh details before retrying</a></p>"
         )
     parts.append('<div class="form-actions">')
     if can_share:

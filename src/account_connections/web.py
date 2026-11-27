@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import inspect
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -193,6 +194,7 @@ def routes(
     origin: str,
     prefix: str = "/connections",
     mount_path: str = "",
+    home_path: str | None = None,
     identity: object | None = None,
     title: str = "My connections",
     intro: str = "",
@@ -233,8 +235,16 @@ def routes(
         or "#" in mount_path
     ):
         raise ValueError("local mount path required")
+    if home_path is not None and (
+        not isinstance(home_path, str)
+        or not re.fullmatch(r"/(?:[A-Za-z0-9_.~-]+/)*[A-Za-z0-9_.~-]*", home_path)
+        or any(segment in (".", "..") for segment in home_path.split("/"))
+    ):
+        raise ValueError("local home path required")
     route_prefix = prefix.rstrip("/")
     prefix = mount_path.rstrip("/") + route_prefix
+    home_route = home_path if home_path is not None else route_prefix + "/"
+    public_home = mount_path.rstrip("/") + home_route
     has_logout = callable(getattr(auth, "logout", None))
     controls = Controls(people)
 
@@ -269,7 +279,7 @@ def routes(
             + "</div>"
             + f'<div class="callout bad" role="alert"><p>{html.escape(message)}</p></div>'
             + '<div class="actions">'
-            + f'<a class="button" href="{html.escape(prefix + "/", quote=True)}">'
+            + f'<a class="button" href="{html.escape(public_home, quote=True)}">'
             "Back to connections</a></div></section>"
         )
         return HTMLResponse(
@@ -572,6 +582,7 @@ def routes(
                                     error=failed[2] if member_submitted and failed else "",
                                     opened=bool(member_submitted),
                                     renewing=offered["policy"] != policy.version,
+                                    home_url=public_home,
                                 )
                                 + "</div></li>"
                             )
@@ -627,6 +638,7 @@ def routes(
                                     else ""
                                 ),
                                 opened=bool(submitted) or refreshing,
+                                home_url=public_home,
                             )
                         )
                     else:
@@ -655,6 +667,7 @@ def routes(
                                 can_share=False,
                                 error=failed[2],
                                 opened=True,
+                                home_url=public_home,
                             )
                         )
                     offers, unavailable = people.offers(person, namespace, policy=policy)
@@ -901,9 +914,12 @@ def routes(
                         ),
                     )
                 return failure("This connection changed. Reload and try again.", 409, request)
-            return RedirectResponse(prefix + "/", status_code=303, headers=HEADERS)
+            return RedirectResponse(public_home, status_code=303, headers=HEADERS)
 
         return handle
+
+    async def legacy_home(_request: Request) -> Response:
+        return RedirectResponse(public_home, status_code=308, headers=HEADERS)
 
     reserved = {"choose", "share", "revoke", "leave", "login", "callback", "logout"}
     identifier(hooks.provider_namespace_field)
@@ -912,10 +928,17 @@ def routes(
     actions = {"choose", "share", "revoke", "leave", *hooks.actions}
     for action in actions:
         identifier(action)
-    return [
-        Route(route_prefix + "/", home, methods=["GET"]),
+    if home_route.rstrip("/") in {route_prefix + "/" + name for name in reserved | actions}:
+        raise ValueError("home path cannot collide with action or authentication routes")
+    result = [
+        Route(home_route, home, methods=["GET"]),
         *[
             Route(route_prefix + "/" + action, mutation(action), methods=["POST"])
             for action in sorted(actions)
         ],
     ]
+    if home_route != route_prefix + "/":
+        result.append(Route(route_prefix + "/", legacy_home, methods=["GET"]))
+        if route_prefix and home_route != route_prefix:
+            result.append(Route(route_prefix, legacy_home, methods=["GET"]))
+    return result

@@ -3,6 +3,18 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-11-27
+
+### Added
+
+- Add optional `home_path` keyword parameter to `account_connections.web.routes()` (defaulting to `prefix + "/"`) so dedicated browser origins can serve the management home page at `/` while keeping POST mutations and logout under `/connections/`.
+- Add `308` redirects from legacy `/connections` and `/connections/` paths to `home_path`, thread `home_url` through `management.share_form()` and `failure()`, and reject invalid or colliding paths.
+
+### Upgrade
+
+- Action required: none. Existing callers keep `<prefix>/` by default.
+- Rollback: compatible with `1.6.0`; no storage or wire-format changes.
+
 ## [1.6.0] - 2026-11-27
 
 ### Added
