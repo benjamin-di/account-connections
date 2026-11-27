@@ -15,13 +15,10 @@ SCRIPT_SOURCE = (
     "'sha256-" + base64.b64encode(hashlib.sha256(SCRIPT.encode()).digest()).decode() + "'"
 )
 STYLE = """
-.account-heading{display:flex;gap:1rem;justify-content:space-between;align-items:center;flex-wrap:wrap}
 .sharing>summary{color:var(--accent)}.share-form{display:block;margin:0;width:100%}
 .share-form fieldset{border:0;padding:0;margin:1rem 0}.share-form legend{font-weight:600}
-.share-form select{font:inherit;width:100%;min-height:44px;border:1px solid var(--line);
-background:var(--surface);color:var(--text);border-radius:.5rem;padding:.5rem}
-.share-form select:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
-.share-summary{padding:.75rem;background:var(--status-bg);border-radius:.5rem}
+.share-form select{width:100%}
+.share-summary{padding:.75rem 1rem;background:var(--status-bg);border-radius:var(--radius-sm)}
 .css-summary,.summary-person,.summary-cap{display:none}
 @supports selector(:has(*)){
 .css-summary{display:inline}.summary-fallback{display:none}
@@ -30,15 +27,17 @@ background:var(--surface);color:var(--text);border-radius:.5rem;padding:.5rem}
 .share-form:has(select:valid) .summary-placeholder{display:none}}
 .share-form .form-actions{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:1rem}
 .share-form [role=alert]:empty{display:none}
-.incoming{border-top:1px solid var(--line);margin-top:1rem}
+.sharing-list,.incoming{border-top:1px solid var(--line);margin-top:1.25rem;padding-top:1rem}
+.sharing-list h3,.incoming h3{margin:0 0 .5rem}
+.rows .share-details{flex:1 0 100%;margin-top:.25rem}
+.rows .share-details details.sharing{border-top:0;margin-top:.25rem;padding-top:0}
 #sharing-dialog{background:var(--surface);color:var(--text);border:1px solid var(--line);
-border-radius:1rem;padding:1.5rem;width:calc(100% - 2rem);max-width:32rem;
-max-height:90vh;overflow:auto}
-#sharing-dialog::backdrop{background:#0007}#sharing-dialog h3{margin-top:0}
+border-radius:var(--radius);box-shadow:var(--shadow-pop);padding:1.5rem;width:calc(100% - 2rem);
+max-width:32rem;max-height:90vh;overflow:auto}
+#sharing-dialog::backdrop{background:rgba(0,0,0,.5)}#sharing-dialog h3{margin-top:0}
 #sharing-dialog .dialog-close{float:right}
-button[data-copy-link]{background:var(--surface);color:var(--accent)}
-@media(max-width:480px){#sharing-dialog{padding:1rem;width:calc(100% - 1rem)}
-.share-form .form-actions{display:block}.share-form button{margin:.4rem 0}}
+@media(max-width:560px){#sharing-dialog{padding:1rem;width:calc(100% - 1rem)}
+.share-form .form-actions{display:grid}.share-form button{margin:0}}
 """
 
 
@@ -122,12 +121,13 @@ def share_form(
             "<p>Ask them to open this app’s Connections page and sign in, then refresh the list. "
             "They do not need their own provider account. This list shows eligible people who "
             "have set up this app; it cannot explain why someone is missing.</p>"
-            f'<p><a data-setup-link href="{escape(prefix, quote=True)}/">Open setup link</a> '
-            '<button type="button" data-copy-link>Copy setup link</button> '
-            f'<button type="submit" data-refresh-people formmethod="get" '
+            f'<div class="actions"><a class="button secondary" data-setup-link '
+            f'href="{escape(prefix, quote=True)}/">Open setup link</a>'
+            '<button type="button" class="secondary" data-copy-link>Copy setup link</button>'
+            f'<button type="submit" class="secondary" data-refresh-people formmethod="get" '
             f'formaction="{escape(prefix, quote=True)}/" formnovalidate '
             f'name="refresh_people" value="{escape(namespace, quote=True)}">'
-            "Refresh list</button></p>"
+            "Refresh list</button></div>"
             "<details><summary>Still missing after signing in?</summary>"
             "<p>Ask the app administrator to check access.</p></details></details>"
         )

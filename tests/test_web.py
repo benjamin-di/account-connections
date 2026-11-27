@@ -336,8 +336,10 @@ def test_recipient_sees_actual_offered_and_selected_permissions(web, selected, h
     client.headers.update({"x-session": "present", "origin": ORIGIN})
     page = client.get("/connections/")
     granted = "Basket, Order history" if history else "Basket"
-    assert page.text.count(f"<p>Granted permissions: {granted}.</p>") == (2 if selected else 1)
-    assert ("<p>Not shared: Order history.</p>" in page.text) is not history
+    assert page.text.count(f"<dt>Granted permissions</dt><dd>{granted}</dd>") == (
+        2 if selected else 1
+    )
+    assert ("<dt>Not shared</dt><dd>Order history</dd>" in page.text) is not history
     assert ("Using bob's account" in page.text) is selected
 
 
@@ -355,8 +357,11 @@ def test_permission_labels_are_escaped_with_identifier_fallback_and_empty_grants
     )
     client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
     page = client.get("/connections/", headers={"x-session": "present"})
-    assert "<p>Granted permissions: none.</p>" in page.text
-    assert "<p>Not shared: &lt;img src=&quot;x&quot;&gt; &amp; Basket, orders.</p>" in page.text
+    assert "<dt>Granted permissions</dt><dd>none</dd>" in page.text
+    assert (
+        "<dt>Not shared</dt><dd>&lt;img src=&quot;x&quot;&gt; &amp; Basket, orders</dd>"
+        in page.text
+    )
     assert '<img src="x">' not in page.text
     assert 'value="cart"' in page.text and 'value="orders"' in page.text
 
@@ -388,9 +393,9 @@ def test_changed_grant_displays_current_offer_without_claiming_stale_selection_i
     page = client.get("/connections/")
     assert "The selected account is unavailable" in page.text
     assert "Using bob's account" not in page.text
-    assert page.text.count("<p>Granted permissions: orders.</p>") == 1
-    assert "<p>Not shared: cart.</p>" in page.text
-    assert "<p>Granted permissions: cart.</p>" not in page.text
+    assert page.text.count("<dt>Granted permissions</dt><dd>orders</dd>") == 1
+    assert "<dt>Not shared</dt><dd>cart</dd>" in page.text
+    assert "<dt>Granted permissions</dt><dd>cart</dd>" not in page.text
 
 
 def test_home_renders_status_and_all_management_forms_with_ordinary_auth(web):
@@ -438,7 +443,7 @@ def test_home_renders_status_and_all_management_forms_with_ordinary_auth(web):
     assert page.status_code == 200
     assert "Saved local session status" in page.text
     assert "Using bob's account" in page.text
-    assert "<p>Granted permissions: orders.</p>" in page.text
+    assert "<dt>Granted permissions</dt><dd>orders</dd>" in page.text
     for action in ("choose", "share", "revoke", "leave"):
         assert f'action="/connections/{action}"' in page.text
     assert 'action="/provider/connect"' in page.text
@@ -481,7 +486,7 @@ def test_share_picker_uses_labels_excludes_self_and_has_no_typed_id(web):
     people, _, client, _ = web
     people.bind("bob", Identity("https://identity.example.com", "bob-sub"), name="Same")
     response = client.get("/connections/", headers={"x-label": "Same"})
-    assert "Signed in to Connections as Same (alice)" in response.text
+    assert "Signed in as Same (alice)." in response.text
     assert 'value="bob">Same (bob)</option>' in response.text
     assert 'name="recipient" required' in response.text
     assert '<option value="">Choose a person</option>' in response.text
@@ -1194,3 +1199,78 @@ def test_directory_callback_failure_is_not_reported_as_an_empty_people_list(web)
     assert "People couldn’t load. Try again." in markup
     assert "No eligible people are available" not in markup
     assert 'value="bob"' not in markup
+
+
+def test_title_intro_suite_and_component_kit_chrome(web):
+    from signin_window.connections import SuiteDirectory
+
+    people, _, _, _ = web
+    directory = SuiteDirectory.from_json(
+        '{"name":"Example","apps":['
+        '{"label":"Shop","url":"https://app.example.com/connections/","section":"Accounts",'
+        '"description":"Orders and basket","endpoint":true},'
+        '{"label":"Ledger","url":"https://ledger.example.com/","section":"Workspaces",'
+        '"description":"Balances"}'
+        '],"endpoint":{"title":"Use with your AI assistant",'
+        '"url":"https://tools.example.com/all/mcp","help":"Add once."}}'
+    )
+    suite = directory.suite(groups=(), current="https://app.example.com/", account="Alex Example")
+    hooks = Hooks(
+        actor=lambda identity: "alice",
+        namespaces=lambda person: ["example"],
+        policy=lambda namespace: Policy("1", frozenset({"cart", "orders"})),
+    )
+    client = TestClient(
+        Starlette(
+            routes=routes(
+                people,
+                Auth(),
+                hooks,
+                origin=ORIGIN,
+                title="Shop",
+                intro="Choose which basket your assistant uses.",
+                suite=lambda request: suite,
+            )
+        ),
+        base_url=ORIGIN,
+    )
+    client.headers.update({"x-session": "present", "origin": ORIGIN})
+    response = client.get("/connections/")
+    assert response.status_code == 200
+    assert "<h1>Shop</h1>" in response.text
+    assert '<p class="intro">Choose which basket your assistant uses.</p>' in response.text
+    assert 'class="suite-switch"' in response.text
+    assert 'href="https://ledger.example.com/"' in response.text
+    assert 'id="connection-suite-endpoint"' in response.text
+    assert 'class="panel hero"' in response.text
+    assert 'class="badge info"' in response.text
+    # Failure page also carries the brand, suite switcher and kit callout.
+    bad = client.post("/connections/choose", json={"namespace": "example"})
+    assert bad.status_code == 400
+    assert "<h1>Shop</h1>" in bad.text
+    assert 'class="suite-switch"' in bad.text
+    assert 'class="badge bad"' in bad.text
+    assert 'class="callout bad"' in bad.text
+
+
+def test_suite_requires_renderer_support_and_omitted_suite_has_no_switcher(web, monkeypatch):
+    import account_connections.web as web_module
+
+    people, _, _, _ = web
+    hooks = Hooks(
+        actor=lambda identity: "alice",
+        namespaces=lambda person: ["example"],
+        policy=lambda namespace: Policy("1", frozenset({"cart"})),
+    )
+    client = TestClient(Starlette(routes=routes(people, Auth(), hooks, origin=ORIGIN)))
+    response = client.get("/connections/", headers={"x-session": "present"})
+    assert response.status_code == 200
+    assert 'class="suite-switch"' not in response.text
+    assert 'id="connection-suite-endpoint"' not in response.text
+
+    def old_page(title, body, *, intro="", refresh=False, login_url="/connections/login"):
+        return body
+
+    monkeypatch.setattr(web_module, "page", old_page)
+    with pytest.raises(ValueError, match="suite"):
+        routes(people, Auth(), hooks, origin=ORIGIN, suite=lambda _req: None)

@@ -15,7 +15,7 @@ The original dependency-free `rules` and `ui` interfaces remain available.
 Optional `people`, `subjects`, `controls`, `admission`, `migrations` and `testing` modules add
 private POSIX control storage and an application conformance suite. Install
 `account-connections[web]` for Starlette management routes using signin-window
-0.7. The base package does not import web, browser or identity dependencies.
+`>= 0.13.0`. The base package does not import web, browser or identity dependencies.
 
 See [the adapter contract](docs/ADAPTERS.md) for the complete integration API,
 lock order, migration protocol and executable conformance fixture.

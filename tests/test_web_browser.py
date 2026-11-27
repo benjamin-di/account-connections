@@ -137,10 +137,12 @@ def test_provider_actions_are_visible_and_keep_origin_and_referrer(
                     "el => getComputedStyle(el).fontFamily"
                 )
                 assert (
-                    page.get_by_role("button", name=action_label, exact=True).evaluate(
-                        "el => getComputedStyle(el).minHeight"
+                    float(
+                        page.get_by_role("button", name=action_label, exact=True)
+                        .evaluate("el => getComputedStyle(el).minHeight")
+                        .removesuffix("px")
                     )
-                    == "44px"
+                    >= 44
                 )
                 page.get_by_role("button", name=action_label, exact=True).click()
                 assert submissions == [origin]
@@ -298,7 +300,8 @@ def test_complete_share_edit_revoke_dialog_with_keyboard_and_scopes(
         "console", lambda message: errors.append(message.text) if message.type == "error" else None
     )
     page.goto(origin + prefix + "/")
-    assert page.get_by_text("Your account · Owner: you").count() == 1
+    assert page.locator("section.panel.hero").count() == 1
+    assert page.locator("article[data-namespace='example']").count() == 1
     opener = page.locator("#share-0-new > summary")
     opener.focus()
     page.keyboard.press("Enter")

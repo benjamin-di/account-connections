@@ -201,8 +201,14 @@ No exception text or provider response belongs in tool errors.
 ## Optional web routes
 
 `web.routes(people, auth, hooks, origin="https://app.example.com",
-prefix="/connections", mount_path="", identity=None)` returns Starlette routes. `auth` is signin-window 0.7
+prefix="/connections", mount_path="", identity=None, title="My connections",
+intro="", suite=None)` returns Starlette routes. `auth` is signin-window `>= 0.13.0`
 `BrowserAuth` (or a compatible implementation). Keep its OIDC login/callback routes.
+Pass `title` and optional `intro` to brand the page for the service, and pass `suite`
+(a `signin_window.connections.Suite` or per-request callable such as `auth.suite`) to
+show the shared Apps switcher and optional assistant-address row when configured;
+omitting `suite` still forwards `auth.suite(request)` when `auth` exposes it and leaves
+the switcher absent when unconfigured.
 `Hooks` supplies `actor(identity)`, `namespaces(person)`, `policy(namespace)`,
 optional `actions={"connect": async_handler, ...}`, optional
 `render_namespace(person, namespace)`, `render_namespace_status(person, namespace)`,

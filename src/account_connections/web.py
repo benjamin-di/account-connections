@@ -1,4 +1,4 @@
-"""Optional Starlette management routes using signin-window 0.7 authentication.
+"""Optional Starlette management routes using signin-window authentication.
 
 The host supplies verified identity mapping and provider-only actions. Route
 handlers never accept an actor or credential payload from submitted fields.
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
-from signin_window.connections import SCRIPT_SOURCE, page
+from signin_window.connections import SCRIPT_SOURCE, Suite, badge, page
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
@@ -70,32 +70,119 @@ def _connection_ready(hooks: Hooks, owner: str, namespace: str) -> bool:
         return False
 
 
-def _form(action: str, label: str, fields: Mapping[str, str]) -> str:
+def _form(action: str, label: str, fields: Mapping[str, str], *, button_class: str = "") -> str:
     escape = html.escape
     hidden = "".join(
         f'<input type="hidden" name="{escape(key, quote=True)}" '
         f'value="{escape(value, quote=True)}">'
         for key, value in fields.items()
     )
+    cls = f' class="{escape(button_class, quote=True)}"' if button_class else ""
     return (
         f'<form data-management data-account="{escape(fields.get("namespace", ""), quote=True)}" '
         f'method="post" action="{escape(action, quote=True)}">{hidden}'
-        f'<button type="submit">{escape(label)}</button></form>'
+        f'<button type="submit"{cls}>{escape(label)}</button></form>'
     )
 
 
-def _permissions(granted: frozenset[str], policy: Policy, labels: Mapping[str, str]) -> str:
+def _avatar(text: str) -> str:
+    initial = text.strip()[:1] or "?"
+    return f'<span class="avatar" aria-hidden="true">{html.escape(initial)}</span>'
+
+
+def _permission_facts(granted: frozenset[str], policy: Policy, labels: Mapping[str, str]) -> str:
     def names(capabilities: frozenset[str]) -> str:
         return (
             ", ".join(html.escape(labels.get(item, item)) for item in sorted(capabilities))
             or "none"
         )
 
-    parts = [f"<p>Granted permissions: {names(granted)}.</p>"]
+    parts = [f"<dt>Granted permissions</dt><dd>{names(granted)}</dd>"]
     withheld = policy.capabilities - granted
     if withheld:
-        parts.append(f"<p>Not shared: {names(withheld)}.</p>")
+        parts.append(f"<dt>Not shared</dt><dd>{names(withheld)}</dd>")
     return "".join(parts)
+
+
+def _hero(
+    title: str,
+    namespaces: Sequence[str],
+    summaries: Sequence[tuple[str, str, str]],
+) -> str:
+    """One top-of-page hero card summarizing assistant connection status."""
+    connected = [(ns, detail) for ns, state, detail in summaries if state in ("own", "shared")]
+    unavailable = [ns for ns, state, _ in summaries if state == "unavailable"]
+    choose_needed = [ns for ns, state, _ in summaries if state == "choose"]
+    heading = "Your assistant’s account" if len(namespaces) == 1 else title
+    if len(namespaces) == 1 and summaries:
+        ns, state, detail = summaries[0]
+        safe_ns, safe_detail = html.escape(ns), html.escape(detail)
+        if state == "own":
+            pill = badge("Connected", "ok")
+            body = f'<p><strong>{safe_ns}</strong></p><p class="muted">{safe_detail}</p>'
+            actions = ""
+        elif state == "shared":
+            pill = badge("In use", "ok")
+            body = f'<p><strong>{safe_detail}</strong></p><p class="muted">Shared with you.</p>'
+            actions = ""
+        elif state == "unavailable":
+            pill = badge("Action needed", "warn")
+            body = (
+                '<p class="muted">The selected account is unavailable. Choose an account below.</p>'
+            )
+            actions = (
+                '<div class="actions">'
+                '<a class="button" href="#connection-0">Review account</a></div>'
+            )
+        elif state == "choose":
+            pill = badge("Choose account", "info")
+            body = '<p class="muted">Choose an account below for your assistant to use.</p>'
+            actions = (
+                '<div class="actions">'
+                '<a class="button" href="#connection-0">Choose account</a></div>'
+            )
+        else:
+            pill = badge("Sign-in needed", "warn")
+            body = '<p class="muted">Connect your account below or choose a shared account.</p>'
+            actions = (
+                f'<div class="actions"><a class="button" href="#connection-0">'
+                f"Connect {html.escape(ns)}</a></div>"
+            )
+    elif connected:
+        pill = (
+            badge("Connected", "ok")
+            if len(connected) == len(namespaces)
+            else badge(f"{len(connected)} of {len(namespaces)} connected", "ok")
+        )
+        names = ", ".join(html.escape(ns) for ns, _ in connected)
+        body = f'<p><strong>{names}</strong></p><p class="muted">Ready for your assistant.</p>'
+        actions = ""
+    elif unavailable:
+        pill = badge("Action needed", "warn")
+        body = '<p class="muted">A selected account is unavailable. Review your accounts below.</p>'
+        actions = (
+            '<div class="actions"><a class="button" href="#connection-0">Review accounts</a></div>'
+        )
+    elif choose_needed:
+        pill = badge("Choose account", "info")
+        body = '<p class="muted">Choose an account below for your assistant to use.</p>'
+        actions = (
+            '<div class="actions"><a class="button" href="#connection-0">Choose account</a></div>'
+        )
+    else:
+        pill = badge("Sign-in needed", "warn")
+        body = '<p class="muted">Connect an account below or choose a shared account.</p>'
+        target = html.escape(namespaces[0]) if namespaces else "account"
+        actions = (
+            f'<div class="actions"><a class="button" href="#connection-0">'
+            f"Connect {target}</a></div>"
+            if namespaces
+            else ""
+        )
+    return (
+        '<section class="panel hero"><div class="card-head">'
+        f"<h2>{html.escape(heading)}</h2>{pill}</div>{body}{actions}</section>"
+    )
 
 
 def routes(
@@ -107,6 +194,9 @@ def routes(
     prefix: str = "/connections",
     mount_path: str = "",
     identity: object | None = None,
+    title: str = "My connections",
+    intro: str = "",
+    suite: Suite | Callable[[Request], Suite | None] | None = None,
 ) -> list[Route]:
     """Generic home/choose/share/revoke/leave and provider action routes.
 
@@ -115,10 +205,16 @@ def routes(
     require a valid app session, one exact Origin and a pinned immutable identity.
     Optional identity is the host's signin-window PageIdentity; the library
     forwards it unchanged to the shared renderer, never substituting its version.
+    Optional title, intro and suite (a Suite or request callable such as
+    BrowserAuth.suite) brand the shared shell and expose the Apps switcher.
     """
-    if identity is not None and "identity" not in inspect.signature(page).parameters:
+    page_params = inspect.signature(page).parameters
+    if identity is not None and "identity" not in page_params:
         raise ValueError("host build identity requires a renderer with identity support")
+    if suite is not None and "suite" not in page_params:
+        raise ValueError("suite navigation requires a renderer with suite support")
     page_options: dict[str, Any] = {"identity": identity} if identity is not None else {}
+    supports_suite = "suite" in page_params
     parsed = urlsplit(origin)
     if (
         parsed.scheme not in ("https", "http")
@@ -141,14 +237,42 @@ def routes(
     prefix = mount_path.rstrip("/") + route_prefix
     controls = Controls(people)
 
-    def failure(message: str, status: int) -> HTMLResponse:
+    def resolve_suite(request: Request | None) -> Suite | None:
+        if not supports_suite:
+            return None
+        if suite is not None:
+            if callable(suite):
+                return suite(request) if request is not None else None
+            return suite
+        if request is not None:
+            auth_suite = getattr(auth, "suite", None)
+            if callable(auth_suite):
+                resolved = auth_suite(request)
+                return resolved if isinstance(resolved, Suite) else None
+        return None
+
+    def render_page(body: str, *, request: Request | None = None, page_intro: str = "") -> str:
+        options = dict(page_options)
+        resolved = resolve_suite(request)
+        if resolved is not None:
+            options["suite"] = resolved
+        if page_intro:
+            return page(title, body, intro=page_intro, login_url=prefix + "/login", **options)
+        return page(title, body, login_url=prefix + "/login", **options)
+
+    def failure(message: str, status: int, request: Request | None = None) -> HTMLResponse:
+        body = (
+            '<section class="panel"><div class="card-head">'
+            "<h2>Action could not finish</h2>"
+            + badge("Error", "bad")
+            + "</div>"
+            + f'<div class="callout bad" role="alert"><p>{html.escape(message)}</p></div>'
+            + '<div class="actions">'
+            + f'<a class="button" href="{html.escape(prefix + "/", quote=True)}">'
+            "Back to connections</a></div></section>"
+        )
         return HTMLResponse(
-            page(
-                "My connections",
-                f'<p role="alert">{html.escape(message)}</p>',
-                login_url=prefix + "/login",
-                **page_options,
-            ),
+            render_page(body, request=request),
             status_code=status,
             headers=HEADERS,
         )
@@ -248,32 +372,41 @@ def routes(
             for namespace in namespaces
         }
         parts: list[str] = []
+        summaries: list[tuple[str, str, str]] = []
         try:
             with people.store.lock():
                 people.require_admitted(person)
-                parts.append(
-                    '<p class="muted">Signed in to Connections as '
-                    + html.escape(label(person))
-                    + "</p>"
-                )
                 for index, namespace in enumerate(namespaces):
                     row = people.namespace(person, namespace)
                     policy = hooks.policy(namespace)
                     control = row["control"]
-                    parts.append(
-                        f'<article aria-labelledby="connection-{index}" tabindex="-1" '
-                        f'data-namespace="{html.escape(namespace, quote=True)}">'
-                        f'<h2 id="connection-{index}">{html.escape(namespace)}</h2>'
-                        "<p>Your account · Owner: you</p>"
-                    )
-                    parts.append(status_fragments[namespace])
                     choice = row["selection"]["choice"]
                     own_active = control["state"] == "active" and ready.get(
                         (person, namespace), False
                     )
-                    if choice and choice["owner"] == person and not own_active:
+                    parts.append(
+                        f'<article aria-labelledby="connection-{index}" tabindex="-1" '
+                        f'data-namespace="{html.escape(namespace, quote=True)}">'
+                    )
+                    if status_fragments[namespace]:
+                        parts.append(f'<h2 id="connection-{index}">{html.escape(namespace)}</h2>')
+                        parts.append(status_fragments[namespace])
+                    else:
                         parts.append(
-                            "<p>Your account is not connected. "
+                            f'<div class="card-head"><h2 id="connection-{index}">'
+                            f"{html.escape(namespace)}</h2>"
+                            + (
+                                badge("Connected", "ok")
+                                if own_active
+                                else badge("Sign-in needed", "warn")
+                            )
+                            + "</div>"
+                        )
+                    selected_usable = False
+                    if choice and choice["owner"] == person and not own_active:
+                        summaries.append((namespace, "disconnected", ""))
+                        parts.append(
+                            '<p class="muted">Your account is not connected. '
                             "Connect it or choose a shared account.</p>"
                         )
                     elif choice:
@@ -285,45 +418,80 @@ def routes(
                                 raise StateError()
                             controls.require_active(choice["owner"], namespace)
                         except (StateError, ConnectionError):
+                            summaries.append((namespace, "unavailable", ""))
                             parts.append(
-                                "<p>The selected account is unavailable. "
-                                "Choose an account to continue.</p>"
+                                '<div class="callout warn"><p>The selected account is unavailable. '
+                                "Choose an account to continue.</p></div>"
                             )
                         else:
-                            parts.append(
-                                f"<p>Using {html.escape(label(choice['owner']))}'s account</p>"
-                            )
-                            if selected_grant is not None:
-                                parts.append(
-                                    _permissions(
-                                        selected_grant.capabilities,
-                                        policy,
-                                        capability_names[namespace],
+                            selected_usable = True
+                            if choice["owner"] == person:
+                                summaries.append((namespace, "own", "Using your account."))
+                                facts = "<dt>Assistant uses</dt><dd>Your account</dd>"
+                            else:
+                                owner_name = html.escape(label(choice["owner"]))
+                                summaries.append(
+                                    (
+                                        namespace,
+                                        "shared",
+                                        f"{label(choice['owner'])}’s {namespace} account",
                                     )
                                 )
+                                facts = (
+                                    f"<dt>Assistant uses</dt><dd>Using {owner_name}'s account</dd>"
+                                )
+                            if selected_grant is not None:
+                                facts += _permission_facts(
+                                    selected_grant.capabilities,
+                                    policy,
+                                    capability_names[namespace],
+                                )
+                            parts.append(f'<dl class="facts">{facts}</dl>')
                     elif not own_active:
+                        summaries.append((namespace, "disconnected", ""))
                         parts.append(
-                            "<p>Your account is not connected. "
+                            '<p class="muted">Your account is not connected. '
                             "Connect it or choose a shared account.</p>"
                         )
                     else:
-                        parts.append("<p>Choose an account to continue.</p>")
-                    if own_active:
-                        if choice and choice["owner"] == person:
-                            parts.append("<p>Selected for assistant: your account</p>")
-                        else:
-                            parts.append(
-                                _form(
-                                    prefix + "/choose",
-                                    "Use my account",
-                                    {
-                                        "namespace": namespace,
-                                        "owner": person,
-                                        "grant": "",
-                                        "expected": row["selection"]["revision"],
-                                    },
-                                )
+                        summaries.append((namespace, "choose", ""))
+                        parts.append(
+                            '<div class="callout info"><p>Choose an account to continue.</p></div>'
+                        )
+                    if own_active and not (
+                        selected_usable and choice and choice["owner"] == person
+                    ):
+                        parts.append(
+                            '<div class="actions">'
+                            + _form(
+                                prefix + "/choose",
+                                "Use my account",
+                                {
+                                    "namespace": namespace,
+                                    "owner": person,
+                                    "grant": "",
+                                    "expected": row["selection"]["revision"],
+                                },
+                                button_class="secondary" if selected_usable else "",
                             )
+                            + "</div>"
+                        )
+                    if fragments[namespace]:
+                        if own_active:
+                            if row["shares"]:
+                                affected = ", ".join(label(member) for member in row["shares"])
+                                parts.append(
+                                    f'<div class="callout warn"><p>Disconnecting '
+                                    f"{html.escape(namespace)} removes your saved provider "
+                                    f"connection and stops access for {html.escape(affected)}."
+                                    "</p></div>"
+                                )
+                            else:
+                                parts.append(
+                                    f'<p class="muted">Disconnecting {html.escape(namespace)} '
+                                    "removes your saved provider connection.</p>"
+                                )
+                        parts.append(fragments[namespace])
                     defaults = (
                         hooks.default_capabilities(namespace)
                         if hooks.default_capabilities
@@ -348,6 +516,65 @@ def routes(
                         else None
                     )
                     refreshing = request.query_params.get("refresh_people") == namespace
+                    if row["shares"]:
+                        parts.append(
+                            '<section class="sharing-list">'
+                            '<h3>People with access</h3><ul class="rows">'
+                        )
+                        for member, offered in row["shares"].items():
+                            member_name = label(member)
+                            member_submitted = (
+                                failed[0]
+                                if failed
+                                and failed[0].get("namespace") == namespace
+                                and failed[0].get("recipient") == member
+                                and failed[0].get("expected")
+                                else None
+                            )
+                            parts.append(
+                                '<li><div class="who">'
+                                + _avatar(member_name)
+                                + f"<span><b>{html.escape(member_name)}</b></span></div>"
+                                + '<div class="share-details"><dl class="facts">'
+                                + _permission_facts(
+                                    frozenset(offered["capabilities"]),
+                                    policy,
+                                    capability_names[namespace],
+                                )
+                                + "</dl>"
+                                + management.share_form(
+                                    prefix,
+                                    namespace,
+                                    member_submitted.get("control_revision", "")
+                                    if member_submitted
+                                    else control["revision"],
+                                    policy,
+                                    failed[1] & policy.capabilities
+                                    if member_submitted and failed
+                                    else frozenset(offered["capabilities"]),
+                                    form_id=f"share-{index}-{member}",
+                                    people=(),
+                                    labels=capability_names[namespace],
+                                    recipient=member,
+                                    recipient_label=member_name,
+                                    expected=member_submitted.get("expected", "")
+                                    if member_submitted
+                                    else offered["revision"],
+                                    can_share=own_active
+                                    and any(
+                                        entry.id == member
+                                        and entry.active
+                                        and entry.available
+                                        and member not in unavailable_people
+                                        for entry in roster
+                                    ),
+                                    error=failed[2] if member_submitted and failed else "",
+                                    opened=bool(member_submitted),
+                                    renewing=offered["policy"] != policy.version,
+                                )
+                                + "</div></li>"
+                            )
+                        parts.append("</ul></section>")
                     if own_active or submitted or refreshing:
                         parts.append(
                             management.share_form(
@@ -402,56 +629,7 @@ def routes(
                             )
                         )
                     else:
-                        parts.append("<p>Connect first to share.</p>")
-                    for member, offered in row["shares"].items():
-                        parts.append(f"<p>Shared with {html.escape(label(member))}</p>")
-                        parts.append(
-                            _permissions(
-                                frozenset(offered["capabilities"]),
-                                policy,
-                                capability_names[namespace],
-                            )
-                        )
-                        submitted = (
-                            failed[0]
-                            if failed
-                            and failed[0].get("namespace") == namespace
-                            and failed[0].get("recipient") == member
-                            and failed[0].get("expected")
-                            else None
-                        )
-                        parts.append(
-                            management.share_form(
-                                prefix,
-                                namespace,
-                                submitted.get("control_revision", "")
-                                if submitted
-                                else control["revision"],
-                                policy,
-                                failed[1] & policy.capabilities
-                                if submitted and failed
-                                else frozenset(offered["capabilities"]),
-                                form_id=f"share-{index}-{member}",
-                                people=(),
-                                labels=capability_names[namespace],
-                                recipient=member,
-                                recipient_label=label(member),
-                                expected=submitted.get("expected", "")
-                                if submitted
-                                else offered["revision"],
-                                can_share=own_active
-                                and any(
-                                    entry.id == member
-                                    and entry.active
-                                    and entry.available
-                                    and member not in unavailable_people
-                                    for entry in roster
-                                ),
-                                error=failed[2] if submitted and failed else "",
-                                opened=bool(submitted),
-                                renewing=offered["policy"] != policy.version,
-                            )
-                        )
+                        parts.append('<p class="muted">Connect first to share.</p>')
                     if (
                         failed
                         and failed[0].get("namespace") == namespace
@@ -478,97 +656,121 @@ def routes(
                                 opened=True,
                             )
                         )
-                    if fragments[namespace]:
-                        if own_active:
-                            affected = (
-                                ", ".join(label(member) for member in row["shares"])
-                                or "nobody else"
-                            )
-                            parts.append(
-                                f"<p>Disconnecting {html.escape(namespace)} removes your saved "
-                                "provider connection "
-                                f"and stops access for {html.escape(affected)}.</p>"
-                            )
-                        parts.append(fragments[namespace])
                     offers, unavailable = people.offers(person, namespace, policy=policy)
                     if offers or unavailable:
                         parts.append('<section class="incoming"><h3>Accounts shared with you</h3>')
-                    for offer in offers:
-                        if offer["owner"] in unavailable_people:
-                            continue
-                        parts.append(f"<p>Shared by {html.escape(label(offer['owner']))}</p>")
-                        parts.append(
-                            _permissions(
-                                offer["grant"].capabilities, policy, capability_names[namespace]
+                        visible_offers = [
+                            offer for offer in offers if offer["owner"] not in unavailable_people
+                        ]
+                        if visible_offers:
+                            parts.append('<ul class="rows">')
+                        for offer in visible_offers:
+                            owner_name = label(offer["owner"])
+                            changed = bool(
+                                choice
+                                and choice["owner"] == offer["owner"]
+                                and choice["grant"] != offer["grant"].revision
                             )
-                        )
-                        changed = bool(
-                            choice
-                            and choice["owner"] == offer["owner"]
-                            and choice["grant"] != offer["grant"].revision
-                        )
-                        if changed:
-                            parts.append("<p>Access changed. Choose this account again.</p>")
-                        available = ready.get((offer["owner"], namespace), False)
-                        try:
-                            controls.require_active(offer["owner"], namespace)
-                        except StateError:
-                            available = False
-                        selected = bool(
-                            choice
-                            and choice["owner"] == offer["owner"]
-                            and not changed
-                            and available
-                        )
-                        if selected:
-                            parts.append("<p>Selected for assistant</p>")
-                        if available:
+                            available = ready.get((offer["owner"], namespace), False)
+                            try:
+                                controls.require_active(offer["owner"], namespace)
+                            except StateError:
+                                available = False
+                            selected = bool(
+                                choice
+                                and choice["owner"] == offer["owner"]
+                                and not changed
+                                and available
+                            )
+                            offer_badge = (
+                                badge("In use", "ok")
+                                if selected
+                                else badge("Access changed", "warn")
+                                if changed
+                                else badge("Unavailable", "neutral")
+                                if not available
+                                else ""
+                            )
                             parts.append(
+                                '<li><div class="who">'
+                                + _avatar(owner_name)
+                                + f"<span><b>{html.escape(owner_name)}</b>"
+                                "<small>Shared with you</small></span></div>"
+                                + offer_badge
+                                + '<div class="share-details"><dl class="facts">'
+                                + _permission_facts(
+                                    offer["grant"].capabilities,
+                                    policy,
+                                    capability_names[namespace],
+                                )
+                                + "</dl>"
+                            )
+                            if changed:
+                                parts.append(
+                                    '<div class="callout warn"><p>Access changed. '
+                                    "Choose this account again.</p></div>"
+                                )
+                            if not available:
+                                parts.append(
+                                    '<div class="callout warn"><p>This shared account is '
+                                    "unavailable. The owner may need to reconnect.</p></div>"
+                                )
+                            action_buttons: list[str] = []
+                            if available:
+                                action_buttons.append(
+                                    _form(
+                                        prefix + "/choose",
+                                        "Use this account again" if changed else "Use this account",
+                                        {
+                                            "namespace": namespace,
+                                            "owner": offer["owner"],
+                                            "grant": offer["grant"].revision,
+                                            "expected": row["selection"]["revision"],
+                                        },
+                                        button_class="secondary" if selected else "",
+                                    )
+                                )
+                            action_buttons.append(
                                 _form(
-                                    prefix + "/choose",
-                                    "Use this account again" if changed else "Use this account",
+                                    prefix + "/leave",
+                                    "Leave account"
+                                    if choice and choice["owner"] == offer["owner"]
+                                    else "Decline access",
                                     {
                                         "namespace": namespace,
                                         "owner": offer["owner"],
-                                        "grant": offer["grant"].revision,
-                                        "expected": row["selection"]["revision"],
+                                        "expected": offer["grant"].revision,
                                     },
+                                    button_class="quiet",
                                 )
                             )
-                        else:
                             parts.append(
-                                "<p>This shared account is unavailable. "
-                                "The owner may need to reconnect.</p>"
+                                '<div class="actions">'
+                                + "".join(action_buttons)
+                                + '</div><p class="muted">Leaving or declining removes this '
+                                "access. The owner must share again; no replacement account "
+                                "is selected.</p></div></li>"
                             )
-                        parts.append(
-                            "<p>Leaving or declining removes this access. The owner must "
-                            "share again; no replacement account is selected.</p>"
-                        )
-                        parts.append(
-                            _form(
-                                prefix + "/leave",
-                                "Leave account"
-                                if choice and choice["owner"] == offer["owner"]
-                                else "Decline access",
-                                {
-                                    "namespace": namespace,
-                                    "owner": offer["owner"],
-                                    "expected": offer["grant"].revision,
-                                },
-                            )
-                        )
-                    if unavailable or unavailable_people:
-                        parts.append("<p>Some connections are unavailable.</p>")
-                    if offers or unavailable:
+                        if visible_offers:
+                            parts.append("</ul>")
+                        if unavailable or unavailable_people:
+                            parts.append('<p class="muted">Some connections are unavailable.</p>')
                         parts.append("</section>")
+                    elif unavailable_people:
+                        parts.append('<p class="muted">Some connections are unavailable.</p>')
                     parts.append("</article>")
         except StateError:
-            return failure("Connection controls unavailable.", 409)
+            return failure("Connection controls unavailable.", 409, request)
+        if namespaces:
+            parts.insert(0, _hero(title, namespaces, summaries))
         if failed:
-            parts.insert(0, f'<p role="alert">{html.escape(failed[2])}</p>')
+            parts.insert(
+                0, f'<div class="callout bad" role="alert"><p>{html.escape(failed[2])}</p></div>'
+            )
         parts.append(f"<style>{management.STYLE}</style><script>{management.SCRIPT}</script>")
+        page_intro = intro or f"Signed in as {label(person)}."
         return HTMLResponse(
-            page("My connections", "".join(parts), login_url=prefix + "/login", **page_options),
+            render_page("".join(parts), request=request, page_intro=page_intro),
             status_code=failed[3] if failed else 200,
             headers=HEADERS,
         )
@@ -583,12 +785,12 @@ def routes(
                 request.headers.get("content-type", "").split(";", 1)[0]
                 != "application/x-www-form-urlencoded"
             ):
-                return failure("Invalid connection form.", 400)
+                return failure("Invalid connection form.", 400, request)
             body = bytearray()
             async for chunk in request.stream():
                 body.extend(chunk)
                 if len(body) > 16384:
-                    return failure("Connection form too large.", 413)
+                    return failure("Connection form too large.", 413, request)
             try:
                 parsed_form = parse_qs(
                     body.decode("utf-8"),
@@ -599,7 +801,7 @@ def routes(
                 if any(
                     len(values) != 1 for key, values in parsed_form.items() if key != "capability"
                 ):
-                    return failure("Invalid connection form.", 400)
+                    return failure("Invalid connection form.", 400, request)
                 form = {key: values[0] for key, values in parsed_form.items()}
                 try:
                     namespace_field = (
@@ -607,9 +809,9 @@ def routes(
                     )
                     namespace = identifier(form[namespace_field])
                 except (KeyError, ValueError):
-                    return failure("Invalid connection namespace.", 400)
+                    return failure("Invalid connection namespace.", 400, request)
                 if namespace not in hooks.namespaces(person):
-                    return failure("Invalid connection namespace.", 400)
+                    return failure("Invalid connection namespace.", 400, request)
                 contact(person, identity, explicit=True)
                 if action in {"choose", "share"}:
                     people.refresh(form["owner"] if action == "choose" else form["recipient"])
@@ -672,7 +874,7 @@ def routes(
                             400,
                         ),
                     )
-                return failure("Invalid connection form.", 400)
+                return failure("Invalid connection form.", 400, request)
             except (StateError, ConnectionError):
                 if action in {"share", "revoke"} and "form" in locals():
                     return await home(
@@ -684,7 +886,7 @@ def routes(
                             409,
                         ),
                     )
-                return failure("This connection changed. Reload and try again.", 409)
+                return failure("This connection changed. Reload and try again.", 409, request)
             return RedirectResponse(prefix + "/", status_code=303, headers=HEADERS)
 
         return handle

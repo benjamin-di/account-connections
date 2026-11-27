@@ -3,6 +3,22 @@
 All notable changes are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-11-27
+
+### Changed
+
+- Restyle the generic management home and error pages with the `signin-window` 0.13.0 component kit: a top `.hero` summary card with status badge, `dl.facts` for account selection and permissions, `.actions` button groups, `.callout` notices, and `ul.rows` with avatars for outgoing and incoming shares. All routes, forms, hidden fields, status codes, sharing/selection rules, and CSP guarantees are unchanged.
+
+### Added
+
+- Support `signin-window` 0.13.x (`signin-window[oidc]>=0.13.0,<0.14`) in the optional `web` extra.
+- Add optional `title`, `intro`, and `suite` (`signin_window.connections.Suite` or per-request callable such as `BrowserAuth.suite`) keyword parameters to `account_connections.web.routes()` so host applications can brand the shared top bar, show the Apps switcher, and expose the optional assistant-address row. When `suite` is omitted, `BrowserAuth.suite(request)` is forwarded automatically if configured.
+
+### Upgrade
+
+- Action required: none for existing callers (all new `web.routes()` parameters are optional). Callers with tests asserting exact legacy HTML markup (`<p>Granted permissions: ...</p>`, `Signed in to Connections as ...`, or `Your account · Owner: you`) should update those markup assertions.
+- Rollback: compatible with 1.4.3; no storage, route, or wire-format changes.
+
 ## [1.4.3] - 2026-11-24
 
 ### Changed
